@@ -37,7 +37,7 @@ jobs:
       - name: Linux desktop dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq clang cmake ninja-build pkg-config libgtk-3-dev libfuse2 file zip
+          sudo apt-get install -y -qq clang cmake ninja-build pkg-config libgtk-3-dev libfuse2 file zip desktop-file-utils
       - uses: actions/download-artifact@v8
         with:
           name: fundus-linux-amd64

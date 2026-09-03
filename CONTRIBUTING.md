@@ -70,3 +70,5 @@ Every op that was ever written must stay replayable: never remove an op kind fro
 ## Tool versions
 
 Go: the version in `go.mod` (`go 1.27`) and `GO_VERSION` in `.github/workflows/ci.yml`. Flutter: pinned exactly in `app/pubspec.yaml` under `environment.flutter`; GitHub Actions (`flutter-version-file`) and the Dockerfile read it from there, so upgrade Flutter by changing that one line, running `flutter pub get`, and committing the lockfile. `flutter pub outdated` and `go list -m -u all` show what can be raised.
+
+AppImage packaging (`make appimage`, `scripts/appimage.sh`) needs `desktop-file-utils`, `libfuse2`, `file` and `zip` on the build host; the release workflow installs them.
