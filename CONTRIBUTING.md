@@ -66,3 +66,7 @@ Every op that was ever written must stay replayable: never remove an op kind fro
 | Live provider | `FUNDUS_LIVE_TESTS=1 OPENAI_API_KEY=… go test ./internal/triage -run Live -v` | A handful of real captures through a real model: task with resolved due date, a vague idea that must not become a task, "hm" parked or dismissed. Costs a few cents; run before a release. |
 | Client | `make app-test` | Flutter analyze and 38 widget/unit tests against a fake API. |
 | Client end to end | `make app-e2e` | The real desktop app against a real daemon under Xvfb: first-run wizard, capture, receipt, undo. |
+
+## Tool versions
+
+Go: the version in `go.mod` (`go 1.27`) and `GO_VERSION` in `.github/workflows/ci.yml`. Flutter: pinned exactly in `app/pubspec.yaml` under `environment.flutter`; GitHub Actions (`flutter-version-file`) and the Dockerfile read it from there, so upgrade Flutter by changing that one line, running `flutter pub get`, and committing the lockfile. `flutter pub outdated` and `go list -m -u all` show what can be raised.
