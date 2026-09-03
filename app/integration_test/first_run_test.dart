@@ -369,10 +369,10 @@ void main() {
         });
 
         await step('settings shows the address', () async {
-          // The undo toast floats over the bottom of the rail; let it go first.
+          // Let the "Undone." toast go first.
           await pumpUntilGone(
             tester,
-            find.textContaining('Undid:'),
+            find.text('Undone.'),
             timeout: const Duration(seconds: 15),
           );
           await tapVisible(tester, find.byIcon(Icons.settings_outlined));

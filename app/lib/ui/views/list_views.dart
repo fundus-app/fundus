@@ -186,11 +186,7 @@ class _InboxRowState extends State<_InboxRow> {
       final c = await state.acceptCapture(widget.capture);
       final r = c.filingReceipt;
       if (mounted && r != null) {
-        showReceiptSnack(
-          context,
-          r,
-          onUndo: () => undoWithConfirm(context, state, r.txnId),
-        );
+        showReceiptSnack(context, r, undo: true);
       }
     } catch (e) {
       if (mounted) showError(context, e);
@@ -425,11 +421,7 @@ class TaskRow extends StatelessWidget {
     try {
       final r = await state.setTaskState(task, s);
       if (context.mounted) {
-        showReceiptSnack(
-          context,
-          r,
-          onUndo: () => undoWithConfirm(context, state, r.txnId),
-        );
+        showReceiptSnack(context, r, undo: true);
       }
     } catch (e) {
       if (context.mounted) showError(context, e);
@@ -635,11 +627,7 @@ class _DoneRow extends StatelessWidget {
     try {
       final r = await state.setTaskState(task, 'open');
       if (context.mounted) {
-        showReceiptSnack(
-          context,
-          r,
-          onUndo: () => undoWithConfirm(context, state, r.txnId),
-        );
+        showReceiptSnack(context, r, undo: true);
       }
     } catch (e) {
       if (context.mounted) showError(context, e);
@@ -1066,7 +1054,8 @@ Future<void> deleteObject(
     showUndoSnack(
       context,
       'Deleted “$title”',
-      onUndo: () => undoWithConfirm(context, state, r.txnId),
+      key: 'txn:${r.txnId}',
+      onUndo: () => undoWithConfirm(context, state, r.txnId, quiet: true),
     );
   } catch (e) {
     if (context.mounted) showError(context, e);

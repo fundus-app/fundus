@@ -12,6 +12,7 @@ import '../../state/app_state.dart';
 import '../../state/settings.dart';
 import '../blocks/block_renderer.dart';
 import '../blocks/ref_labels.dart';
+import 'toasts.dart';
 import '../settings_screen.dart';
 import '../theme.dart';
 
@@ -125,39 +126,46 @@ String _sentence(String s) {
 
 void showError(BuildContext context, Object e) {
   final url = context.read<Settings?>()?.serverUrl;
-  final messenger = ScaffoldMessenger.maybeOf(context);
-  messenger?.hideCurrentSnackBar();
-  messenger?.showSnackBar(
-    SnackBar(
-      content: Text(describeError(e, serverUrl: url)),
-      backgroundColor: Theme.of(context).colorScheme.error,
-      action: isConnectionError(e)
-          ? SnackBarAction(
-              label: 'Settings',
-              textColor: Theme.of(context).colorScheme.onError,
-              onPressed: () => SettingsScreen.show(context),
-            )
-          : null,
-    ),
+  final connection = isConnectionError(e);
+  showToast(
+    context,
+    describeError(e, serverUrl: url),
+    error: true,
+    key: connection ? 'connection' : null,
+    actionLabel: connection ? 'Settings' : null,
+    onAction: connection
+        ? () async {
+            SettingsScreen.show(context);
+            return false;
+          }
+        : null,
   );
 }
 
+/// What an Undo action in a toast runs; a non-null result means it worked.
+typedef UndoAction = Future<Object?> Function();
+
+/// Receipt toast. `undo: true` adds an Undo action for the receipt's txn
+/// (with the conflict dialog); the toast then reads "Undone." for 2 s.
 void showReceiptSnack(
   BuildContext context,
   Receipt r, {
-  VoidCallback? onUndo,
+  bool undo = false,
+  UndoAction? onUndo,
   String? actionLabel,
 }) {
-  final messenger = ScaffoldMessenger.maybeOf(context);
-  messenger?.hideCurrentSnackBar();
-  messenger?.showSnackBar(
-    SnackBar(
-      content: Text(r.summary, maxLines: 2, overflow: TextOverflow.ellipsis),
-      action: onUndo == null
+  final state = undo ? context.read<AppState>() : null;
+  final action =
+      onUndo ??
+      (state == null
           ? null
-          : SnackBarAction(label: actionLabel ?? 'Undo', onPressed: onUndo),
-      duration: const Duration(seconds: 5),
-    ),
+          : () => undoWithConfirm(context, state, r.txnId, quiet: true));
+  showToast(
+    context,
+    r.summary,
+    key: 'txn:${r.txnId}',
+    actionLabel: actionLabel,
+    onAction: action == null ? null : () async => await action() != null,
   );
 }
 
@@ -165,16 +173,14 @@ void showReceiptSnack(
 void showUndoSnack(
   BuildContext context,
   String text, {
-  required VoidCallback onUndo,
+  required UndoAction onUndo,
+  String? key,
 }) {
-  final messenger = ScaffoldMessenger.maybeOf(context);
-  messenger?.hideCurrentSnackBar();
-  messenger?.showSnackBar(
-    SnackBar(
-      content: Text(text, maxLines: 2, overflow: TextOverflow.ellipsis),
-      action: SnackBarAction(label: 'Undo', onPressed: onUndo),
-      duration: const Duration(seconds: 6),
-    ),
+  showToast(
+    context,
+    text,
+    key: key,
+    onAction: () async => await onUndo() != null,
   );
 }
 
@@ -182,11 +188,12 @@ void showUndoSnack(
 Future<Receipt?> undoWithConfirm(
   BuildContext context,
   AppState state,
-  String txnId,
-) async {
+  String txnId, {
+  bool quiet = false,
+}) async {
   try {
     final r = await state.undo(txnId);
-    if (context.mounted) showReceiptSnack(context, r);
+    if (context.mounted && !quiet) _undone(context, txnId);
     return r;
   } on ApiException catch (e) {
     if (!context.mounted) return null;
@@ -228,7 +235,7 @@ Future<Receipt?> undoWithConfirm(
       if (ok == true) {
         try {
           final r = await state.undo(txnId, force: true);
-          if (context.mounted) showReceiptSnack(context, r);
+          if (context.mounted && !quiet) _undone(context, txnId);
           return r;
         } catch (e2) {
           if (context.mounted) showError(context, e2);
@@ -243,6 +250,13 @@ Future<Receipt?> undoWithConfirm(
     return null;
   }
 }
+
+void _undone(BuildContext context, String txnId) => showToast(
+  context,
+  'Undone.',
+  key: 'txn:$txnId',
+  duration: ToastController.settledDuration,
+);
 
 // ---------------------------------------------------------------------------
 // States

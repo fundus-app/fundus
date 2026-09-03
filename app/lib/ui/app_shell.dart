@@ -13,6 +13,7 @@ import 'setup/setup_wizard.dart';
 import 'theme.dart';
 import 'views/list_views.dart';
 import 'widgets/common.dart';
+import 'widgets/toasts.dart';
 
 const _views = AppView.values;
 
@@ -104,16 +105,10 @@ class _AppShellState extends State<AppShell> {
       final r = await state.undoLatest();
       if (!mounted) return;
       if (r == null) {
-        ScaffoldMessenger.maybeOf(context)
-            ?.showSnackBar(const SnackBar(content: Text('Nothing to undo.')));
+        showToast(context, 'Nothing to undo.', key: 'undo-latest');
         return;
       }
-      showReceiptSnack(
-        context,
-        r,
-        actionLabel: 'Redo',
-        onUndo: () => undoWithConfirm(context, state, r.txnId),
-      );
+      showReceiptSnack(context, r, actionLabel: 'Redo', undo: true);
     } catch (e) {
       if (mounted) showError(context, e);
     }
@@ -340,22 +335,20 @@ class _AppShellState extends State<AppShell> {
       );
     }
 
-    // Floating toasts sit above the bottom navigation on phones; on wider
-    // layouts they are inset past the rail so they never cover the gear.
-    final theme = Theme.of(context);
-    final toastTheme = theme.snackBarTheme.copyWith(
-      insetPadding: narrow
-          ? const EdgeInsets.fromLTRB(16, 0, 16, 12)
-          : const EdgeInsets.fromLTRB(72 + 16, 0, 16, 16),
-    );
+    // Toasts sit bottom-right of the content area; on phones bottom-centre
+    // above the navigation bar.
+    final toasts = toastControllerOf(context);
+    if (toasts != null) {
+      final inset = narrow ? 64 + MediaQuery.paddingOf(context).bottom : 0.0;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) toasts.place(bottomInset: inset, centered: narrow);
+      });
+    }
     return RefLabels(
       source: state.refs,
-      child: Theme(
-        data: theme.copyWith(snackBarTheme: toastTheme),
-        child: CallbackShortcuts(
-          bindings: bindings,
-          child: Focus(autofocus: true, child: body),
-        ),
+      child: CallbackShortcuts(
+        bindings: bindings,
+        child: Focus(autofocus: true, child: body),
       ),
     );
   }

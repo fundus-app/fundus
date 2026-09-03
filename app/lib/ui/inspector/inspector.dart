@@ -9,6 +9,7 @@ import '../blocks/ref_labels.dart';
 import '../theme.dart';
 import '../views/list_views.dart' show deleteObject;
 import '../widgets/common.dart';
+import '../widgets/toasts.dart';
 
 /// The detail pane: read and directly edit the selected object.
 class Inspector extends StatelessWidget {
@@ -265,15 +266,10 @@ Future<bool> _confirm(
 }
 
 Future<void> _run(BuildContext context, Future<Receipt> Function() fn) async {
-  final state = context.read<AppState>();
   try {
     final r = await fn();
     if (context.mounted) {
-      showReceiptSnack(
-        context,
-        r,
-        onUndo: () => undoWithConfirm(context, state, r.txnId),
-      );
+      showReceiptSnack(context, r, undo: true);
     }
   } catch (e) {
     if (context.mounted) showError(context, e);
@@ -284,10 +280,11 @@ Future<void> _run(BuildContext context, Future<Receipt> Function() fn) async {
 Future<void> copyId(BuildContext context, String id) async {
   await Clipboard.setData(ClipboardData(text: id));
   if (!context.mounted) return;
-  final m = ScaffoldMessenger.maybeOf(context);
-  m?.hideCurrentSnackBar();
-  m?.showSnackBar(
-    const SnackBar(content: Text('ID copied'), duration: Duration(seconds: 2)),
+  showToast(
+    context,
+    'ID copied',
+    key: 'copy-id',
+    duration: ToastController.settledDuration,
   );
 }
 
@@ -1551,11 +1548,7 @@ class _CaptureInspectorState extends State<CaptureInspector> {
       final updated = await state.acceptCapture(c);
       final r = updated.filingReceipt;
       if (mounted && r != null) {
-        showReceiptSnack(
-          context,
-          r,
-          onUndo: () => undoWithConfirm(context, state, r.txnId),
-        );
+        showReceiptSnack(context, r, undo: true);
       }
     } catch (e) {
       if (mounted) showError(context, e);

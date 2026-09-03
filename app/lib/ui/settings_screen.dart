@@ -8,6 +8,7 @@ import '../state/settings.dart';
 import 'setup/setup_wizard.dart';
 import 'theme.dart';
 import 'widgets/common.dart';
+import 'widgets/toasts.dart';
 
 /// Settings: server, model & provider, autonomy, theme, backup, about.
 /// Everything saves on change and confirms with a "Saved" toast.
@@ -311,10 +312,11 @@ String _thousands(int n) {
 
 /// "Saved" toast used by every setting that saves on change.
 void showSaved(BuildContext context) {
-  final m = ScaffoldMessenger.maybeOf(context);
-  m?.hideCurrentSnackBar();
-  m?.showSnackBar(
-    const SnackBar(content: Text('Saved.'), duration: Duration(seconds: 2)),
+  showToast(
+    context,
+    'Saved.',
+    key: 'saved',
+    duration: ToastController.settledDuration,
   );
 }
 

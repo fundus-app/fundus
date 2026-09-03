@@ -9,6 +9,7 @@ import '../../state/app_state.dart';
 import '../settings_screen.dart' show showSaved;
 import '../theme.dart';
 import '../widgets/common.dart';
+import '../widgets/toasts.dart';
 
 /// A provider the wizard can connect.
 class ProviderChoice {
@@ -402,8 +403,7 @@ class _SetupWizardState extends State<SetupWizard> {
     final state = context.read<AppState>();
     await state.settingsChanged();
     if (!mounted) return;
-    ScaffoldMessenger.maybeOf(context)
-        ?.showSnackBar(SnackBar(content: Text(message)));
+    showToast(context, message, key: 'setup');
     setState(() {
       _busy = false;
       _step = _Step.provider;

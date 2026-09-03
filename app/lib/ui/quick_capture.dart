@@ -9,6 +9,7 @@ import '../api/client.dart';
 import '../api/models.dart';
 import '../state/dictation.dart';
 import 'widgets/mic_button.dart';
+import 'widgets/toasts.dart';
 import 'theme.dart';
 import 'widgets/common.dart';
 
@@ -29,6 +30,7 @@ class QuickCaptureApp extends StatelessWidget {
     theme: FundusTheme.light(),
     darkTheme: FundusTheme.dark(),
     themeMode: themeMode,
+    builder: toastBuilder,
     home: QuickCapture(api: api),
   );
 }

@@ -11,6 +11,7 @@ import 'state/app_state.dart';
 import 'state/chat_state.dart';
 import 'state/settings.dart';
 import 'ui/app_shell.dart';
+import 'ui/widgets/toasts.dart';
 import 'ui/quick_capture.dart';
 import 'ui/theme.dart';
 
@@ -148,6 +149,7 @@ class FundusApp extends StatelessWidget {
               theme: FundusTheme.light(),
               darkTheme: FundusTheme.dark(),
               themeMode: s.themeMode,
+              builder: toastBuilder,
               home: AppShell(
                 initialView: initialView,
                 initialOpen: initialOpen,

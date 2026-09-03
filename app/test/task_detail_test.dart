@@ -5,6 +5,7 @@ import 'package:fundus_app/api/models.dart';
 import 'package:fundus_app/state/app_state.dart';
 import 'package:fundus_app/ui/inspector/inspector.dart';
 import 'package:fundus_app/ui/theme.dart';
+import 'package:fundus_app/ui/widgets/toasts.dart';
 import 'package:fundus_app/ui/views/list_views.dart';
 import 'package:provider/provider.dart';
 
@@ -49,6 +50,7 @@ Widget _app(AppState state, Widget child) => ChangeNotifierProvider.value(
   value: state,
   child: MaterialApp(
     theme: FundusTheme.light(),
+    builder: toastBuilder,
     home: Scaffold(body: child),
   ),
 );
