@@ -129,8 +129,10 @@ Future<void> _ensureWindowSize(WidgetTester tester) async {
     await windowManager.setPosition(Offset.zero);
     for (var i = 0; i < 10; i++) {
       await tester.pump(const Duration(milliseconds: 100));
-      if (tester.view.physicalSize.width / tester.view.devicePixelRatio >= 1000)
+      if (tester.view.physicalSize.width / tester.view.devicePixelRatio >=
+          1000) {
         break;
+      }
     }
   } catch (e) {
     // ignore: avoid_print

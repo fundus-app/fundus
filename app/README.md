@@ -81,6 +81,10 @@ xvfb-run -a make app-e2e         # X11 virtual display
 WLR_BACKENDS=headless sway -c /dev/null &   # then WAYLAND_DISPLAY=wayland-N GDK_BACKEND=wayland make app-e2e
 ```
 
+On failure the test prints the failing step, the daemon log tail, `/v1/health`,
+`/v1/inbox` and a trimmed widget tree, and writes them (plus a screenshot where
+supported) to `app/build/e2e/`; CI uploads that folder as an artifact.
+
 `FUNDUS_BIN` points the test at another daemon binary. The app accepts
 `--server=http://host:port` to pin the daemon address for one run.
 
