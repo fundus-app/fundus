@@ -409,14 +409,25 @@ class _MessageTile extends StatelessWidget {
                   children: [
                     Text(
                       shortTime(message.at),
-                      style: theme.textTheme.labelSmall,
+                      style: theme.textTheme.labelSmall!.copyWith(fontSize: 12),
                     ),
                     if (message.captureId.isNotEmpty) ...[
-                      const SizedBox(width: 6),
-                      RefChip(
-                        id: message.captureId,
-                        onTap: onOpen,
-                        dense: true,
+                      Text(
+                        ' · ',
+                        style: theme.textTheme.labelSmall!.copyWith(
+                          fontSize: 12,
+                        ),
+                      ),
+                      LinkedText(
+                        style: theme.textTheme.labelSmall!.copyWith(
+                          fontSize: 12,
+                        ),
+                        parts: [
+                          TextPart(
+                            'filed',
+                            onTap: () => onOpen(message.captureId),
+                          ),
+                        ],
                       ),
                     ],
                   ],
@@ -661,7 +672,7 @@ class _WorkingTrailState extends State<_WorkingTrail> {
                     const SizedBox(width: 6),
                     Expanded(
                       child: Text(
-                        s.summary,
+                        _stepLabel(context, s),
                         style: theme.textTheme.labelSmall!.copyWith(
                           color: s.kind == 'error' ? scheme.error : null,
                         ),
@@ -675,5 +686,33 @@ class _WorkingTrailState extends State<_WorkingTrail> {
         ],
       ),
     );
+  }
+}
+
+/// Step summaries come from the daemon and may name objects by id; show
+/// titles (resolved through the app's title cache) instead.
+String _stepLabel(BuildContext context, ChatStep s) {
+  final refs = context.read<AppState>().refs;
+  String titled(String id, String fallback) {
+    final t = refs.labelFor(id);
+    if (t == null) refs.request([id]);
+    return t == null || t.isEmpty ? fallback : '“$t”';
+  }
+
+  final idRe = RegExp(r'\b(note|task|topic|cap|src|conv)_[0-9A-Za-z]+\b');
+  if (s.kind == 'error') return s.summary.replaceAll(idRe, 'an item');
+  switch (s.tool) {
+    case 'get':
+      final m = idRe.firstMatch(s.summary);
+      return m == null
+          ? 'Reading an item'
+          : 'Reading ${titled(m.group(0)!, 'an item')}';
+    case 'undo':
+      return 'Undoing a change';
+    default:
+      return s.summary.replaceAllMapped(
+        idRe,
+        (m) => titled(m.group(0)!, 'an item'),
+      );
   }
 }

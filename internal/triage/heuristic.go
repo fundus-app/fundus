@@ -37,7 +37,7 @@ var (
 func (h *Heuristic) Complete(ctx context.Context, req *llm.Request) (*llm.Response, error) {
 	if req.Schema == nil || req.Schema.Name != SchemaName {
 		if len(req.Tools) > 0 || req.Schema == nil {
-			return &llm.Response{Model: "heuristic", Content: "The fake provider cannot hold a conversation. Configure a real model under [chat] to ask questions."}, nil
+			return &llm.Response{Model: "heuristic", Content: "The rules provider files captures but cannot hold a conversation. Choose a model in Settings to ask questions."}, nil
 		}
 		return &llm.Response{Model: "heuristic", Content: "{}"}, nil
 	}

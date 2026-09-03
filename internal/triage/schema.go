@@ -45,7 +45,7 @@ var Schema = json.RawMessage(`{
   "properties": {
     "classification": {"type": "string", "enum": ["note", "idea", "task", "question", "info", "correction", "research", "unclear", "discard"]},
     "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-    "summary": {"type": "string", "description": "One short sentence, in the language of the capture text, saying what was filed."},
+    "summary": {"type": "string", "description": "One short sentence saying what was filed, in the same language as the capture text (English capture → English summary, German → German)."},
     "question": {"type": ["string", "null"], "description": "Only when classification is unclear: the one question whose answer decides how to file this."},
     "operations": {
       "type": "array",
@@ -55,19 +55,19 @@ var Schema = json.RawMessage(`{
         "additionalProperties": false,
         "required": ["op"],
         "properties": {
-          "op": {"type": "string", "enum": ["note.create", "note.append", "task.create", "task.complete", "task.mention", "task.update", "topic.create"]},
+          "op": {"type": "string", "enum": ["note.create", "note.append", "task.create", "task.complete", "task.mention", "task.update", "topic.create", "link"], "description": "link: attach an existing note (note_id) or task (task_id) from the context to topics, without changing anything else."},
           "kind": {"type": "string", "description": "note.create: note|idea. topic.create: topic|person|project."},
           "title": {"type": "string"},
           "markdown": {"type": "string", "description": "Body for note.create / note.append. Headings, paragraphs, lists, quotes only."},
-          "note_id": {"type": "string", "description": "note.append: id of an existing note from the context."},
+          "note_id": {"type": "string", "description": "note.append/link: id of an existing note from the context."},
           "text": {"type": "string", "description": "task.create/task.update: the task in imperative form."},
-          "task_id": {"type": "string", "description": "task.complete/task.mention/task.update: id of an existing task from the context."},
+          "task_id": {"type": "string", "description": "task.complete/task.mention/task.update/link: id of an existing task from the context."},
           "state": {"type": "string", "description": "task.create/task.update: open|later|waiting|done."},
           "due": {"type": ["string", "null"], "description": "YYYY-MM-DD, only when the user states a date or deadline."},
           "effort_minutes": {"type": ["integer", "null"], "description": "Only when the user gives an estimate."},
           "importance": {"type": ["integer", "null"], "description": "1 low, 2 normal, 3 high; only when the user signals it."},
           "waiting_on": {"type": "string"},
-          "topics": {"type": "array", "items": {"type": "string"}, "description": "Existing topic ids from the context, or new topic names."},
+          "topics": {"type": "array", "items": {"type": "string"}, "description": "Topics this object belongs to: existing topic ids from the context, or topic names — including the name of a topic created in this same answer (names are matched, never duplicated)."},
           "name": {"type": "string", "description": "topic.create: the topic name."},
           "aliases": {"type": "array", "items": {"type": "string"}}
         }

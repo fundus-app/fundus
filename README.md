@@ -14,7 +14,7 @@ You type a thought, in whatever words come to mind:
 
 Fundus files it for you. A moment later a small receipt appears:
 
-> Created task “Check why the Deye's second string sometimes delivers no power”. No due date. Linked to Solar.
+> Created task “Check why the Deye's second string sometimes delivers no power” in Solar.
 
 That is the whole idea. No folders to choose, no tags to maintain, no forms to fill in. You capture; a language model of your choice does the filing; Fundus keeps the books.
 
@@ -22,7 +22,7 @@ That is the whole idea. No folders to choose, no tags to maintain, no forms to f
 - **Find it again** by asking in plain language: *What were my thoughts on a Grafana dashboard for the heating data? Which open tasks belong to the solar system? What could I finish in an hour?* Fundus answers from your own notes and cites them.
 - **Let the model organise**: notes and ideas get titles and topics, tasks get recognised, repeated mentions raise a task's attention, questions you asked get answered from your own notes.
 - **Stay in control**: every automatic change shows a receipt of what actually happened, with an Undo button. Nothing is deleted or rewritten behind your back; the model may only add, never overwrite or remove.
-- **Own your data**: a plain event log and JSON on your disk, Markdown export any time, no account, no cloud, works with OpenAI, Anthropic, OpenRouter or a local Ollama model.
+- **Own your data**: a plain event log and JSON on your disk, Markdown export any time, no account, no cloud, works with OpenAI, Google Gemini, Anthropic, OpenRouter or an Ollama model on your own machine or LAN.
 
 <p align="center"><img src="docs/screenshots/inbox.png" width="900" alt="Fundus: inbox with a filed capture and the primer"></p>
 
@@ -33,7 +33,7 @@ That is the whole idea. No folders to choose, no tags to maintain, no forms to f
    **macOS** `Fundus-<version>-macos.zip` (unzip, drag to Applications; the first start needs a right-click → Open because the app is not yet notarised),
    **Windows** `Fundus-<version>-windows.zip` (unzip anywhere and start `fundus_app.exe`; SmartScreen will ask once because the build is unsigned).
    The app carries its own background service; nothing else to install.
-2. Open it. The first screen offers OpenAI or Anthropic (paste an API key), OpenRouter (connect with one click), a local Ollama, or "no model for now". Fundus tests the connection and suggests two models: a fast one for filing, a capable one for conversations.
+2. Open it. The first screen offers OpenAI, Google Gemini or Anthropic (paste an API key), OpenRouter (connect with one click), Ollama (on this machine or any address on your network), or "no model for now". Fundus tests the connection, lists the models the account can use and suggests three: a fast one for filing, a capable one for conversations, and one for dictation.
 3. Write something. That is all.
 
 You can capture before a model is connected; those captures wait in the inbox and get filed as soon as one is.

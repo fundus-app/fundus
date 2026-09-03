@@ -52,6 +52,26 @@ binds {
 bindsym $mod+Shift+c exec /path/to/bundle/fundus_app --quick-capture
 ```
 
+## Dictation
+
+The microphone button in the capture bar (and in the quick-capture window)
+records while you talk, then sends the WAV to `POST /v1/transcribe` and puts
+the transcript into the field for review; nothing is captured until you press
+Enter. `Ctrl Shift K` toggles recording, `Esc` stops it. The button only shows
+when a dictation model is connected (`GET /v1/health` → `dictation: true`).
+
+- Linux: needs `parecord` and `pactl` (package `pulseaudio-utils`, works with
+  PipeWire through `pipewire-pulse`) and `ffmpeg`. Without them the button
+  reports "Microphone not available".
+- macOS: the microphone permission prompt uses `NSMicrophoneUsageDescription`
+  from `Runner/Info.plist`.
+- Web: `MediaRecorder`/`getUserMedia`; the browser asks for permission.
+
+The second e2e test records through the real plugin against a daemon that
+has a dictation model. It skips itself unless `FUNDUS_DICTATION_URL` is set;
+the recipe (null sink, `espeak-ng`, `PULSE_SOURCE`/`PULSE_SINK`) is at the top
+of `integration_test/first_run_test.dart`.
+
 ## One-command start
 
 The desktop app starts the daemon for you: when nothing answers at the

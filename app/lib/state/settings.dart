@@ -26,7 +26,16 @@ class Settings extends ChangeNotifier implements InstanceStore {
   String get serverUrl =>
       _override ?? _prefs?.getString('server_url') ?? defaultServerUrl();
   String get token => _prefs?.getString('token') ?? '';
+  ThemeMode? _themeOverride;
+
+  /// Forces a theme for this process (launch arg `--theme=`).
+  void overrideTheme(ThemeMode m) {
+    _themeOverride = m;
+    notifyListeners();
+  }
+
   ThemeMode get themeMode {
+    if (_themeOverride != null) return _themeOverride!;
     switch (_prefs?.getString('theme')) {
       case 'light':
         return ThemeMode.light;

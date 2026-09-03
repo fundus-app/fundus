@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/fundus-app/fundus/internal/config"
 	"github.com/fundus-app/fundus/internal/core"
@@ -415,6 +416,13 @@ func parseResult(content string) (*Result, error) {
 			if op.State != "" && op.State != "open" && op.State != "later" && op.State != "waiting" && op.State != "done" {
 				return nil, &ValidationError{Msg: fmt.Sprintf("operation %d: task state %q", i, op.State)}
 			}
+		case "link":
+			if (op.NoteID == "") == (op.TaskID == "") {
+				return nil, &ValidationError{Msg: fmt.Sprintf("operation %d: link needs exactly one of note_id or task_id", i)}
+			}
+			if len(op.Topics) == 0 {
+				return nil, &ValidationError{Msg: fmt.Sprintf("operation %d: link needs topics", i)}
+			}
 		case "topic.create":
 			if strings.TrimSpace(op.Name) == "" {
 				return nil, &ValidationError{Msg: fmt.Sprintf("operation %d: topic.create needs name", i)}
@@ -440,8 +448,8 @@ func parseResult(content string) (*Result, error) {
 // cannot half-apply. fallbackText is used as note body when the model gives
 // none. It is shared by triage, chat and proposal acceptance.
 //
-// shown lists the object ids the model was offered; note.append and task.*
-// may only reference those, so injected text cannot target objects by id.
+// shown lists the object ids the model was offered; note.append, link and
+// task.* may only reference those, so injected text cannot target objects by id.
 // A nil map means no restriction (a user accepted the operations).
 func Plan(c *core.Core, policy config.Policy, originID, fallbackText, classification string, operations []Operation, shown map[string]bool) ([]model.Op, error) {
 	if len(operations) > policy.MaxOpsPerCapture && policy.MaxOpsPerCapture > 0 {
@@ -454,8 +462,9 @@ func Plan(c *core.Core, policy config.Policy, originID, fallbackText, classifica
 		return nil
 	}
 	var ops []model.Op
-	newTopics := map[string]string{} // normalized name -> id created in this plan
-	newNotes := map[string]string{}  // normalized title -> note id created in this plan
+	newTopics := map[string]string{}     // normalized name -> id created in this plan
+	newTopicNames := map[string]string{} // id -> display name, for the catch-up below
+	newNotes := map[string]string{}      // normalized title -> note id created in this plan
 	newTopicOps := 0
 	maxNew := policy.MaxNewTopicsPerCapture
 	createTopic := func(name, kind string, aliases []string) (string, bool) {
@@ -471,6 +480,7 @@ func Plan(c *core.Core, policy config.Policy, originID, fallbackText, classifica
 		}
 		id := newTopicID()
 		newTopics[norm] = id
+		newTopicNames[id] = name
 		newTopicOps++
 		n := name
 		ops = append(ops, model.Op{Op: "topic.create", ID: id, Name: &n, Kind: kind, Aliases: aliases})
@@ -487,8 +497,11 @@ func Plan(c *core.Core, policy config.Policy, originID, fallbackText, classifica
 				out = append(out, tp.ID)
 				continue
 			}
-			if strings.HasPrefix(n, "topic_") {
-				return nil, &ValidationError{Msg: fmt.Sprintf("topic %s does not exist", n)}
+			if ids.Valid(n) {
+				// An id that is not a known topic: either a stale topic id or,
+				// as seen live, a note id the model put into "topics". Never
+				// turn it into a topic name; let the corrective round fix it.
+				return nil, &ValidationError{Msg: fmt.Sprintf("%s is not a topic", n)}
 			}
 			if id, ok := createTopic(n, "", nil); ok {
 				out = append(out, id)
@@ -512,7 +525,7 @@ func Plan(c *core.Core, policy config.Policy, originID, fallbackText, classifica
 			if err != nil {
 				return nil, err
 			}
-			title := strings.TrimSpace(op.Title)
+			title := trimSentence(op.Title)
 			md := strings.TrimSpace(op.Markdown)
 			if md == "" {
 				md = fallbackText
@@ -569,13 +582,51 @@ func Plan(c *core.Core, policy config.Policy, originID, fallbackText, classifica
 			if err != nil {
 				return nil, err
 			}
-			o := model.Op{Op: "task.create", Text: strings.TrimSpace(op.Text), Topics: topics, Origins: []string{originID},
+			o := model.Op{Op: "task.create", Text: trimSentence(op.Text), Topics: topics, Origins: []string{originID},
 				Due: op.Due, EffortMinutes: op.EffortMinutes, Importance: op.Importance, State: op.State}
 			if op.WaitingOn != "" {
 				w := op.WaitingOn
 				o.WaitingOn = &w
 			}
 			ops = append(ops, o)
+		case "link":
+			topics, err := resolveTopics(op.Topics)
+			if err != nil {
+				return nil, err
+			}
+			if len(topics) == 0 {
+				return nil, &ValidationError{Msg: "link needs at least one topic"}
+			}
+			switch {
+			case op.NoteID != "" && op.TaskID == "":
+				if err := allowed(op.NoteID); err != nil {
+					return nil, err
+				}
+				obj, err := c.Get(op.NoteID)
+				if err != nil {
+					return nil, &ValidationError{Msg: fmt.Sprintf("note %s does not exist", op.NoteID)}
+				}
+				n, ok := obj.(*model.Note)
+				if !ok {
+					return nil, &ValidationError{Msg: fmt.Sprintf("%s is not a note", op.NoteID)}
+				}
+				ops = append(ops, model.Op{Op: "note.update", ID: n.ID, ExpectedRev: n.Rev, AddTopics: topics})
+			case op.TaskID != "" && op.NoteID == "":
+				if err := allowed(op.TaskID); err != nil {
+					return nil, err
+				}
+				obj, err := c.Get(op.TaskID)
+				if err != nil {
+					return nil, &ValidationError{Msg: fmt.Sprintf("task %s does not exist", op.TaskID)}
+				}
+				tk, ok := obj.(*model.Task)
+				if !ok {
+					return nil, &ValidationError{Msg: fmt.Sprintf("%s is not a task", op.TaskID)}
+				}
+				ops = append(ops, model.Op{Op: "task.update", ID: tk.ID, ExpectedRev: tk.Rev, AddTopics: topics})
+			default:
+				return nil, &ValidationError{Msg: "link needs exactly one of note_id or task_id"}
+			}
 		case "task.complete", "task.mention", "task.update":
 			if err := allowed(op.TaskID); err != nil {
 				return nil, err
@@ -617,9 +668,124 @@ func Plan(c *core.Core, policy config.Policy, originID, fallbackText, classifica
 			ops = append(ops, o)
 		}
 	}
+	ops = catchUp(c, ops, newTopicNames, shown)
 	// Topic creations must precede their use: move them to the front.
 	sort.SliceStable(ops, func(i, j int) bool { return ops[i].Op == "topic.create" && ops[j].Op != "topic.create" })
 	return ops, nil
+}
+
+// catchUp attaches a topic created in this plan to the objects that name it:
+// the notes and tasks created alongside it, and the shown objects from earlier
+// captures. A topic usually appears only on the second or third capture about
+// a subject, and models link the earlier objects unreliably; this makes the
+// catch-up deterministic. It only adds links (additive, undoable) and only for
+// objects the model was shown, so injected text cannot reach further.
+func catchUp(c *core.Core, ops []model.Op, newTopics map[string]string, shown map[string]bool) []model.Op {
+	if len(newTopics) == 0 {
+		return ops
+	}
+	has := func(topics []string, id string) bool {
+		for _, t := range topics {
+			if t == id {
+				return true
+			}
+		}
+		return false
+	}
+	for id, name := range newTopics {
+		// Objects created in the same plan.
+		for i := range ops {
+			o := &ops[i]
+			switch o.Op {
+			case "note.create":
+				if o.Title != nil && mentionsName(*o.Title, name) && !has(o.Topics, id) {
+					o.Topics = append(o.Topics, id)
+				}
+			case "task.create":
+				if mentionsName(o.Text, name) && !has(o.Topics, id) {
+					o.Topics = append(o.Topics, id)
+				}
+			}
+		}
+		// Objects the model was shown.
+		for objID := range shown {
+			obj, err := c.Get(objID)
+			if err != nil {
+				continue
+			}
+			var text, updateOp string
+			var current []string
+			var rev int
+			switch o := obj.(type) {
+			case *model.Note:
+				text, updateOp, current, rev = o.NoteTitle, "note.update", o.Topics, o.Rev
+			case *model.Task:
+				if o.State == model.TaskDone {
+					continue
+				}
+				text, updateOp, current, rev = o.Text, "task.update", o.Topics, o.Rev
+			default:
+				continue
+			}
+			if !mentionsName(text, name) || has(current, id) {
+				continue
+			}
+			merged := false
+			for i := range ops {
+				if ops[i].ID == objID && ops[i].Op == updateOp {
+					if !has(ops[i].AddTopics, id) {
+						ops[i].AddTopics = append(ops[i].AddTopics, id)
+					}
+					merged = true
+					break
+				}
+			}
+			if !merged {
+				ops = append(ops, model.Op{Op: updateOp, ID: objID, ExpectedRev: rev, AddTopics: []string{id}})
+			}
+		}
+	}
+	return ops
+}
+
+// mentionsName reports whether text contains name as a whole word, ignoring
+// case. Names shorter than three letters never match.
+func mentionsName(text, name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if len([]rune(name)) < 3 {
+		return false
+	}
+	low := strings.ToLower(text)
+	for start := 0; ; {
+		i := strings.Index(low[start:], name)
+		if i < 0 {
+			return false
+		}
+		i += start
+		before := i == 0 || !isLetter(lastRune(low[:i]))
+		after := i+len(name) >= len(low) || !isLetter(firstRune(low[i+len(name):]))
+		if before && after {
+			return true
+		}
+		start = i + len(name)
+	}
+}
+
+func isLetter(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
+
+func firstRune(s string) rune {
+	for _, r := range s {
+		return r
+	}
+	return 0
+}
+
+func lastRune(s string) rune {
+	var last rune
+	for _, r := range s {
+		last = r
+	}
+	return last
 }
 
 // findNoteByTitle returns a live note whose normalized title equals title.
@@ -703,4 +869,15 @@ func classifyError(err error) string {
 		return "The model did not answer in time. Fundus will retry."
 	}
 	return model.Shorten(err.Error(), 200)
+}
+
+// trimSentence trims whitespace and one trailing full stop: titles and task
+// texts are noun phrases, and models tend to copy the capture's final period
+// into them, which then collides with the receipt's own punctuation.
+func trimSentence(s string) string {
+	s = strings.TrimSpace(s)
+	if strings.HasSuffix(s, ".") && !strings.HasSuffix(s, "..") {
+		s = strings.TrimSpace(strings.TrimSuffix(s, "."))
+	}
+	return s
 }

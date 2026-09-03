@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../state/app_state.dart';
+import 'widgets/mic_button.dart';
 import 'widgets/common.dart';
 
 /// The omnipresent capture field plus the pills of recent captures.
@@ -20,10 +21,10 @@ class CaptureBar extends StatefulWidget {
   final bool autofocus;
 
   @override
-  State<CaptureBar> createState() => _CaptureBarState();
+  State<CaptureBar> createState() => CaptureBarState();
 }
 
-class _CaptureBarState extends State<CaptureBar> {
+class CaptureBarState extends State<CaptureBar> {
   final _ctrl = TextEditingController();
   bool _busy = false;
 
@@ -31,6 +32,25 @@ class _CaptureBarState extends State<CaptureBar> {
   void dispose() {
     _ctrl.dispose();
     super.dispose();
+  }
+
+  /// Appends a transcript to whatever is in the field and keeps focus there.
+  void insertText(String text) {
+    final t = text.trim();
+    if (t.isEmpty) return;
+    final existing = _ctrl.text.trimRight();
+    _ctrl.text = existing.isEmpty ? t : '$existing $t';
+    _ctrl.selection = TextSelection.collapsed(offset: _ctrl.text.length);
+    widget.focusNode.requestFocus();
+    setState(() {});
+  }
+
+  Future<void> _escape() async {
+    final d = context.read<AppState>().dictation;
+    if (d.isRecording) {
+      final text = await d.stop();
+      if (mounted && text.isNotEmpty) insertText(text);
+    }
   }
 
   Future<void> _submit() async {
@@ -60,6 +80,7 @@ class _CaptureBarState extends State<CaptureBar> {
           bindings: {
             const SingleActivator(LogicalKeyboardKey.enter): _submit,
             const SingleActivator(LogicalKeyboardKey.numpadEnter): _submit,
+            const SingleActivator(LogicalKeyboardKey.escape): _escape,
           },
           child: TextField(
             key: const Key('capture-field'),
@@ -91,6 +112,12 @@ class _CaptureBarState extends State<CaptureBar> {
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
+                          if (state.dictationAvailable)
+                            MicButton(
+                              controller: state.dictation,
+                              onText: insertText,
+                              compact: true,
+                            ),
                           const KeyHint('↵'),
                           const SizedBox(width: 6),
                           IconButton(

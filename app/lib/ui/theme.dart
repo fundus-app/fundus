@@ -220,7 +220,7 @@ class FundusTheme {
         waitDuration: const Duration(milliseconds: 400),
       ),
       progressIndicatorTheme: ProgressIndicatorThemeData(color: scheme.primary),
-      iconTheme: IconThemeData(color: scheme.onSurfaceVariant, size: 20),
+      iconTheme: IconThemeData(color: scheme.onSurfaceVariant, size: 18),
     );
   }
 

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/fundus-app/fundus/internal/config"
+	"github.com/fundus-app/fundus/internal/core"
 	"github.com/fundus-app/fundus/internal/llm"
 	"github.com/fundus-app/fundus/internal/model"
 )
@@ -17,7 +18,11 @@ import (
 // depends on the network. Run it before a release:
 //
 //	FUNDUS_LIVE_TESTS=1 OPENAI_API_KEY=… go test ./internal/triage -run Live -v
-func TestLiveProvider(t *testing.T) {
+//
+// liveTriager builds a triager against the real provider named by the
+// environment, or skips the test.
+func liveTriager(t *testing.T) (*core.Core, *Triager) {
+	t.Helper()
 	if os.Getenv("FUNDUS_LIVE_TESTS") != "1" {
 		t.Skip("set FUNDUS_LIVE_TESTS=1 to run against a real provider")
 	}
@@ -26,7 +31,7 @@ func TestLiveProvider(t *testing.T) {
 		key = os.Getenv("OPENAI_API_KEY")
 	}
 	if key == "" {
-		t.Skip("no API key")
+		t.Skip("no FUNDUS_LIVE_KEY or OPENAI_API_KEY")
 	}
 	base := os.Getenv("FUNDUS_LIVE_BASE_URL")
 	if base == "" {
@@ -40,7 +45,11 @@ func TestLiveProvider(t *testing.T) {
 	c := newCore(t)
 	cfg := config.Default()
 	cfg.Triage.Model = modelName
-	tr := New(c, p, cfg.Triage, cfg.Autonomy, quiet)
+	return c, New(c, p, cfg.Triage, cfg.Autonomy, quiet)
+}
+
+func TestLiveProvider(t *testing.T) {
+	c, tr := liveTriager(t)
 
 	cases := []struct {
 		text  string
@@ -92,5 +101,53 @@ func TestLiveProvider(t *testing.T) {
 		}
 		t.Logf("%-40s → %s | %s", strings.TrimSpace(model.Shorten(tc.text, 40)), cap.Status, cap.Result.Summary)
 		tc.check(t)
+	}
+}
+
+// TestLiveTopicCatchUp replays what a user saw: three captures about the same
+// new project. The model may create the topic on any of them; by the end,
+// every note and open task must be attached to it, which requires the model to
+// link the earlier objects with "link" when the topic finally appears.
+func TestLiveTopicCatchUp(t *testing.T) {
+	c, tr := liveTriager(t)
+	texts := []string{
+		"Fundus zum Einhorn machen: Backlinks kassieren.",
+		"Fundus auf Y Combinator, Hacker News, Indie Hackers und Product Hunt veröffentlichen und crossverlinken.",
+		"Fundus braucht eine Landingpage mit Screenshots und einem Download-Button.",
+	}
+	for _, text := range texts {
+		id := capture(t, c, text)
+		rec, err := tr.Process(context.Background(), id)
+		if err != nil {
+			t.Fatalf("%q: %v", text, err)
+		}
+		t.Logf("%-40s → %s", model.Shorten(text, 40), rec.Summary)
+	}
+	var fundus string
+	for _, tv := range c.Topics(false) {
+		if strings.Contains(strings.ToLower(tv.Topic.Name), "fundus") {
+			fundus = tv.Topic.ID
+		}
+	}
+	if fundus == "" {
+		t.Fatalf("no Fundus topic after three captures: %+v", c.Topics(false))
+	}
+	linked := func(topics []string) bool {
+		for _, id := range topics {
+			if id == fundus {
+				return true
+			}
+		}
+		return false
+	}
+	for _, n := range c.Notes("", false) {
+		if !linked(n.Topics) {
+			t.Errorf("note %q not linked to the Fundus topic", n.NoteTitle)
+		}
+	}
+	for _, tk := range c.Tasks([]model.TaskState{model.TaskOpen, model.TaskLater, model.TaskWaiting}, false) {
+		if !linked(tk.Topics) {
+			t.Errorf("task %q not linked to the Fundus topic", tk.Text)
+		}
 	}
 }

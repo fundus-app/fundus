@@ -71,12 +71,21 @@ Future<void> main(List<String> args) async {
   final server = arg('server');
   if (server != null && server.isNotEmpty) settings.overrideServer(server);
 
+  // `--theme=dark|light` overrides the theme for this run (review screenshots).
+  final themeArg = arg('theme');
+  if (themeArg == 'dark' || themeArg == 'light') {
+    settings.overrideTheme(
+      themeArg == 'dark' ? ThemeMode.dark : ThemeMode.light,
+    );
+  }
+
   runApp(
     FundusApp(
       settings: settings,
       initialView: arg('view'),
       initialOpen: arg('open'),
       daemonPath: arg('daemon-path'),
+      openSettings: args.contains('--settings'),
     ),
   );
 }
@@ -89,6 +98,7 @@ class FundusApp extends StatelessWidget {
     this.initialView,
     this.initialOpen,
     this.daemonPath,
+    this.openSettings = false,
   });
   final Settings settings;
 
@@ -100,6 +110,9 @@ class FundusApp extends StatelessWidget {
 
   /// `--daemon-path=/path/to/fundus`: binary to start when no daemon answers.
   final String? daemonPath;
+
+  /// `--settings`: open the Settings dialog after launch.
+  final bool openSettings;
 
   @override
   Widget build(BuildContext context) {
@@ -138,6 +151,7 @@ class FundusApp extends StatelessWidget {
               home: AppShell(
                 initialView: initialView,
                 initialOpen: initialOpen,
+                openSettings: openSettings,
               ),
             ),
           );

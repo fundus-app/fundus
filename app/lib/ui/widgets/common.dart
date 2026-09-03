@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:io' show SocketException;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:http/http.dart' show ClientException;
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
@@ -334,79 +334,235 @@ class ErrorState extends StatelessWidget {
   }
 }
 
-/// Small-caps section label.
+/// Section label: "Notes · 1" in small caps with a hairline under it.
 class SectionLabel extends StatelessWidget {
-  const SectionLabel(this.text, {super.key, this.trailing});
+  const SectionLabel(this.text, {super.key, this.count, this.trailing});
   final String text;
+  final int? count;
   final Widget? trailing;
   @override
   Widget build(BuildContext context) {
-    final t = Theme.of(context).textTheme.labelSmall!;
+    final scheme = Theme.of(context).colorScheme;
+    final style = Theme.of(context).textTheme.labelSmall!.copyWith(
+      fontSize: 11,
+      letterSpacing: 1.2,
+      color: scheme.onSurfaceVariant,
+    );
     return Padding(
-      padding: const EdgeInsets.only(top: 18, bottom: 6),
-      child: Row(
+      padding: const EdgeInsets.only(top: 28, bottom: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Expanded(
-            child: Text(
-              text.toUpperCase(),
-              style: t.copyWith(letterSpacing: 1.1),
-            ),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  (count == null ? text : '$text · $count').toUpperCase(),
+                  style: style,
+                ),
+              ),
+              ?trailing,
+            ],
           ),
-          ?trailing,
+          const SizedBox(height: 6),
+          Divider(height: 1, thickness: 1, color: scheme.outlineVariant),
         ],
       ),
     );
   }
 }
 
-/// The object id as a small chip: short id, full id in the tooltip, tap copies.
-class IdChip extends StatelessWidget {
-  const IdChip(this.id, {super.key, this.rev});
-  final String id;
-  final int? rev;
+/// Muted one-liner for empty sections.
+class EmptyLine extends StatelessWidget {
+  const EmptyLine(this.text, {super.key});
+  final String text;
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 10),
+    child: Text(text, style: secondaryStyle(context)),
+  );
+}
+
+/// The one secondary text style: 13px, muted.
+TextStyle secondaryStyle(BuildContext context) => Theme.of(context)
+    .textTheme
+    .bodySmall!
+    .copyWith(
+      fontSize: 13,
+      height: 1.4,
+      color: Theme.of(context).colorScheme.onSurfaceVariant,
+    );
+
+/// A calm list row: 28px icon column, 15px title, 13px secondary line,
+/// subtle hover tint, no elevation.
+class ListRow extends StatefulWidget {
+  const ListRow({
+    super.key,
+    required this.title,
+    this.secondary,
+    this.icon,
+    this.leading,
+    this.trailing,
+    this.onTap,
+    this.strike = false,
+  });
+  final String title;
+  final String? secondary;
+  final IconData? icon;
+  final Widget? leading;
+  final Widget? trailing;
+  final VoidCallback? onTap;
+  final bool strike;
+  @override
+  State<ListRow> createState() => _ListRowState();
+}
+
+class _ListRowState extends State<ListRow> {
+  bool _hover = false;
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Tooltip(
-      message: '$id${rev == null ? '' : '\nrevision $rev'}\nTap to copy',
-      child: Semantics(
-        button: true,
-        label: 'Copy id $id',
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final title = theme.textTheme.bodyLarge!.copyWith(
+      fontSize: 15,
+      height: 1.4,
+      decoration: widget.strike ? TextDecoration.lineThrough : null,
+      color: widget.strike ? scheme.onSurfaceVariant : scheme.onSurface,
+    );
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: Material(
+        color: _hover && widget.onTap != null
+            ? scheme.surfaceContainerLow
+            : Colors.transparent,
+        borderRadius: BorderRadius.circular(6),
         child: InkWell(
-          borderRadius: BorderRadius.circular(5),
-          onTap: () async {
-            await Clipboard.setData(ClipboardData(text: id));
-            if (context.mounted) {
-              ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-                SnackBar(
-                  content: Text('Copied $id'),
-                  duration: const Duration(seconds: 2),
-                ),
-              );
-            }
-          },
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-            decoration: BoxDecoration(
-              color: scheme.surfaceContainer,
-              borderRadius: BorderRadius.circular(5),
-            ),
+          onTap: widget.onTap,
+          borderRadius: BorderRadius.circular(6),
+          hoverColor: Colors.transparent,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
             child: Row(
-              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(
-                  RefChip.iconFor(id),
-                  size: 11,
-                  color: scheme.onSurfaceVariant,
+                SizedBox(
+                  width: 28,
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child:
+                        widget.leading ??
+                        (widget.icon == null
+                            ? null
+                            : Icon(
+                                widget.icon,
+                                size: 18,
+                                color: scheme.onSurfaceVariant,
+                              )),
+                  ),
                 ),
-                const SizedBox(width: 4),
-                Text(RefChip.shortId(id), style: monoStyle(context, size: 11)),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        widget.title,
+                        style: title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      if (widget.secondary != null &&
+                          widget.secondary!.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Text(
+                            widget.secondary!,
+                            style: secondaryStyle(context),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                if (widget.trailing != null) ...[
+                  const SizedBox(width: 8),
+                  widget.trailing!,
+                ],
               ],
             ),
           ),
         ),
       ),
     );
+  }
+}
+
+/// Text with inline links (primary color, underline on hover) that wrap
+/// naturally inside the sentence.
+class LinkedText extends StatefulWidget {
+  const LinkedText({super.key, required this.parts, this.style});
+
+  /// Alternating plain and link segments; a link has an [onTap].
+  final List<TextPart> parts;
+  final TextStyle? style;
+  @override
+  State<LinkedText> createState() => _LinkedTextState();
+}
+
+class TextPart {
+  const TextPart(this.text, {this.onTap, this.glue = false});
+  final String text;
+  final VoidCallback? onTap;
+
+  /// Attach to the previous part without a separator (used by fact rows).
+  final bool glue;
+  bool get isLink => onTap != null;
+}
+
+class _LinkedTextState extends State<LinkedText> {
+  int? _hovered;
+  final _recognizers = <int, TapGestureRecognizer>{};
+
+  @override
+  void dispose() {
+    for (final r in _recognizers.values) {
+      r.dispose();
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final base = widget.style ?? Theme.of(context).textTheme.bodyMedium!;
+    final spans = <InlineSpan>[];
+    for (var i = 0; i < widget.parts.length; i++) {
+      final p = widget.parts[i];
+      if (!p.isLink) {
+        spans.add(TextSpan(text: p.text));
+        continue;
+      }
+      final rec = _recognizers.putIfAbsent(i, TapGestureRecognizer.new)
+        ..onTap = p.onTap;
+      spans.add(
+        TextSpan(
+          text: p.text,
+          style: base.copyWith(
+            color: scheme.primary,
+            decoration: _hovered == i
+                ? TextDecoration.underline
+                : TextDecoration.none,
+            decorationColor: scheme.primary,
+          ),
+          recognizer: rec,
+          mouseCursor: SystemMouseCursors.click,
+          onEnter: (_) => setState(() => _hovered = i),
+          onExit: (_) => setState(() => _hovered = null),
+        ),
+      );
+    }
+    return Text.rich(TextSpan(style: base, children: spans));
   }
 }
 
@@ -438,8 +594,8 @@ class ActorBadge extends StatelessWidget {
             'System',
           );
     final tip = receipt.isModel
-        ? '${receipt.actorLabel}${receipt.modelName.isEmpty ? '' : ' · ${receipt.modelName}'}\n${receipt.actor}'
-        : receipt.actor;
+        ? 'Fundus${receipt.modelName.isEmpty ? '' : ' · ${receipt.modelName}'}'
+        : label;
     return Tooltip(
       message: tip,
       child: Container(
@@ -494,8 +650,8 @@ class QuietUndoButton extends StatelessWidget {
   }
 }
 
-/// One receipt line: the object as a titled chip inside the sentence.
-/// `Created idea "X". Linked to Y.` → Created idea [X]. Linked to Y.
+/// One receipt line: the quoted object title becomes an inline link.
+/// `Created idea “X” in Fundus.` → Created idea [X] in Fundus.
 class ReceiptLineView extends StatelessWidget {
   const ReceiptLineView({
     super.key,
@@ -509,51 +665,36 @@ class ReceiptLineView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final base = style ?? Theme.of(context).textTheme.bodyMedium!;
+    final base =
+        style ?? Theme.of(context).textTheme.bodyMedium!.copyWith(height: 1.5);
     final text = line.text;
-    // New receipts use curly quotes; older ones straight quotes.
     var q1 = text.indexOf('“');
     var q2 = q1 >= 0 ? text.indexOf('”', q1 + 1) : -1;
     if (q1 < 0 || q2 < 0) {
       q1 = text.indexOf('"');
       q2 = q1 >= 0 ? text.indexOf('"', q1 + 1) : -1;
     }
-    if (line.objectId.isEmpty || q1 < 0 || q2 < 0) {
+    if (line.objectId.isEmpty || q1 < 0 || q2 < 0 || onOpen == null) {
       return Text(text, style: base);
     }
     final quoted = text.substring(q1 + 1, q2);
-    // Swallow punctuation glued to the closing quote (`"X".` → chip, then
-    // continue with the next sentence).
-    var rest = text.substring(q2 + 1);
-    while (rest.isNotEmpty && '.,;:'.contains(rest[0])) {
-      rest = rest.substring(1);
-    }
-    rest = rest.trimLeft();
-    final chipLabel = RefLabels.maybeOf(context)?.labelFor(line.objectId);
-    return Text.rich(
-      TextSpan(
-        style: base,
-        children: [
-          TextSpan(text: '${text.substring(0, q1).trimRight()} '),
-          WidgetSpan(
-            alignment: PlaceholderAlignment.middle,
-            child: RefChip(
-              id: line.objectId,
-              label: chipLabel == null || chipLabel.isEmpty
-                  ? quoted
-                  : chipLabel,
-              onTap: onOpen,
-              dense: true,
-            ),
-          ),
-          if (rest.isNotEmpty) TextSpan(text: ' $rest'),
-        ],
-      ),
+    final resolved = RefLabels.maybeOf(context)?.labelFor(line.objectId);
+    final title = resolved == null || resolved.isEmpty ? quoted : resolved;
+    final before = text.substring(0, q1);
+    final after = text.substring(q2 + 1);
+    return LinkedText(
+      style: base,
+      parts: [
+        if (before.isNotEmpty) TextPart(before),
+        TextPart(title, onTap: () => onOpen!(line.objectId)),
+        if (after.isNotEmpty) TextPart(after),
+      ],
     );
   }
 }
 
-/// One receipt: actor, time, lines with object chips, undo.
+/// One receipt: who · when · model on the first line with a small Undo,
+/// then the effects as plain sentences.
 class ReceiptTile extends StatelessWidget {
   const ReceiptTile({
     super.key,
@@ -577,62 +718,65 @@ class ReceiptTile extends StatelessWidget {
     final scheme = theme.colorScheme;
     final state = context.read<AppState>();
     final undone = receipt.isUndone;
-    final style =
-        (dense ? theme.textTheme.bodySmall : theme.textTheme.bodyMedium)!
-            .copyWith(
-              decoration: undone ? TextDecoration.lineThrough : null,
-              color: undone ? scheme.onSurfaceVariant : scheme.onSurface,
-            );
-    final metaBits = <String>[
+    final line = theme.textTheme.bodyMedium!.copyWith(
+      fontSize: 14,
+      height: 1.5,
+      decoration: undone ? TextDecoration.lineThrough : null,
+      color: undone ? scheme.onSurfaceVariant : scheme.onSurface,
+    );
+    final meta = <String>[
       if (showTime) timeAgo(receipt.at),
       if (receipt.modelName.isNotEmpty) receipt.modelName,
       if (undone) 'undone',
       if (receipt.isUndo) 'undo',
     ];
     return Padding(
-      padding: EdgeInsets.symmetric(vertical: dense ? 4 : 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      padding: EdgeInsets.symmetric(vertical: dense ? 6 : 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (showActor) ...[
-            Padding(
-              padding: const EdgeInsets.only(top: 2),
-              child: ActorBadge(receipt),
-            ),
-            const SizedBox(width: 8),
-          ],
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (receipt.lines.isEmpty)
-                  Text(receipt.summary, style: style)
-                else
-                  for (final l in receipt.lines)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 2),
-                      child: ReceiptLineView(
-                        line: l,
-                        onOpen: undone ? null : onOpen,
-                        style: style,
-                      ),
+          Row(
+            children: [
+              if (showActor) ...[ActorBadge(receipt), const SizedBox(width: 8)],
+              Expanded(
+                child: Text(
+                  meta.join(' · '),
+                  style: secondaryStyle(context)
+                      .copyWith(color: undone ? scheme.warning : null),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (allowUndo && !undone && receipt.undoable)
+                Semantics(
+                  label: 'Undo this change',
+                  child: TextButton(
+                    style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      minimumSize: const Size(0, 28),
+                      textStyle: theme.textTheme.labelMedium,
                     ),
-                if (metaBits.isNotEmpty)
-                  Text(
-                    metaBits.join('  ·  '),
-                    style: theme.textTheme.labelSmall!.copyWith(
-                      color: undone ? scheme.warning : null,
-                    ),
+                    onPressed: () =>
+                        undoWithConfirm(context, state, receipt.txnId),
+                    child: const Text('Undo'),
                   ),
-              ],
-            ),
+                ),
+            ],
           ),
-          if (allowUndo && !undone && receipt.undoable) ...[
-            const SizedBox(width: 6),
-            QuietUndoButton(
-              onPressed: () => undoWithConfirm(context, state, receipt.txnId),
-            ),
-          ],
+          const SizedBox(height: 4),
+          if (receipt.lines.isEmpty)
+            Text(receipt.summary, style: line)
+          else
+            for (var i = 0; i < receipt.lines.length; i++)
+              Padding(
+                padding: EdgeInsets.only(top: i == 0 ? 0 : 4),
+                child: ReceiptLineView(
+                  line: receipt.lines[i],
+                  onOpen: undone ? null : onOpen,
+                  style: line,
+                ),
+              ),
         ],
       ),
     );
@@ -854,4 +998,37 @@ class _EditableTitleState extends State<EditableTitle> {
       ),
     );
   }
+}
+
+/// The part of [secondary] that is not already said by [title]: when the
+/// secondary text starts with the title (or the title is its first sentence,
+/// possibly cut with an ellipsis), only the remainder is returned; null when
+/// nothing new would be shown.
+String? remainderAfterTitle(String title, String secondary) {
+  final sec = secondary.trim();
+  if (sec.isEmpty) return null;
+  var t = title.trim();
+  while (t.endsWith('…') || t.endsWith('.') || t.endsWith(' ')) {
+    t = t.substring(0, t.length - 1);
+  }
+  if (t.isEmpty) return sec;
+  if (!sec.startsWith(t)) return sec;
+  var rest = sec.substring(t.length).trimLeft();
+  while (rest.isNotEmpty && '.,;:!?…'.contains(rest[0])) {
+    rest = rest.substring(1).trimLeft();
+  }
+  return rest.isEmpty ? null : rest;
+}
+
+/// Whether two Markdown texts say the same thing (line endings, trailing
+/// spaces and blank-line runs ignored) — used to skip no-op saves.
+bool sameMarkdown(String a, String b) {
+  String norm(String s) => s
+      .replaceAll('\r\n', '\n')
+      .split('\n')
+      .map((l) => l.trimRight())
+      .join('\n')
+      .replaceAll(RegExp(r'\n{3,}'), '\n\n')
+      .trim();
+  return norm(a) == norm(b);
 }

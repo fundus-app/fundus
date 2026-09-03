@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart' show MediaType;
 
 import 'models.dart';
 
@@ -91,6 +93,9 @@ abstract class FundusApi {
 
   /// POST /v1/setup/oauth/start → the URL to open externally.
   Future<String> oauthStart(String provider);
+
+  /// POST /v1/transcribe: a WAV recording (≤ 25 MB) → its transcript.
+  Future<String> transcribe(Uint8List wav, {String? language});
 }
 
 /// HTTP implementation.
@@ -380,6 +385,29 @@ class HttpFundusApi implements FundusApi {
     return ModelList.fromJson(
       _map(await _get('/v1/setup/models', {'provider': provider})),
     );
+  }
+
+  @override
+  Future<String> transcribe(Uint8List wav, {String? language}) async {
+    final req = http.MultipartRequest('POST', _u('/v1/transcribe'))
+      ..headers.addAll(_headers)
+      ..files.add(
+        http.MultipartFile.fromBytes(
+          'audio',
+          wav,
+          filename: 'dictation.wav',
+          contentType: MediaType('audio', 'wav'),
+        ),
+      );
+    if (language != null && language.isNotEmpty) {
+      req.fields['language'] = language;
+    }
+    final streamed = await _client
+        .send(req)
+        .timeout(const Duration(minutes: 3));
+    final res = await http.Response.fromStream(streamed);
+    final j = _map(_decode(res));
+    return j['text'] is String ? j['text'] as String : '';
   }
 
   @override

@@ -74,14 +74,18 @@ class _Row extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(8),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (leading != null) ...[
-                Padding(padding: const EdgeInsets.only(top: 2), child: leading),
-                const SizedBox(width: 10),
-              ],
+              if (leading != null)
+                SizedBox(
+                  width: 28,
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: leading,
+                  ),
+                ),
               Expanded(child: child),
               if (trailing != null) ...[const SizedBox(width: 6), trailing!],
             ],
@@ -235,16 +239,16 @@ class _InboxRowState extends State<_InboxRow> {
             ],
           ),
           if (c.status == 'needs_review') ...[
-            const SizedBox(height: 8),
-            _ParkedHeader(capture: c, onOpen: widget.onOpen),
             const SizedBox(height: 6),
+            _ParkedHeader(capture: c, onOpen: widget.onOpen),
+            const SizedBox(height: 12),
             Row(
               children: [
                 Expanded(
                   child: TextField(
                     controller: _answer,
                     decoration: InputDecoration(
-                      hintText: 'Answer, or add context and file again…',
+                      hintText: 'Answer or add context…',
                       isDense: true,
                     ),
                     style: theme.textTheme.bodySmall!.copyWith(
@@ -265,8 +269,8 @@ class _InboxRowState extends State<_InboxRow> {
                   ),
                   const SizedBox(width: 4),
                   // With a proposal, the model only runs again with new input.
-                  FilledButton.tonal(
-                    style: FilledButton.styleFrom(
+                  TextButton(
+                    style: TextButton.styleFrom(
                       visualDensity: VisualDensity.compact,
                     ),
                     onPressed: _busy || _answer.text.trim().isEmpty
@@ -595,11 +599,10 @@ class NoteList extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(n.title, style: Theme.of(context).textTheme.titleSmall),
-              if (n.preview.isNotEmpty &&
-                  !n.preview.trim().startsWith(n.title.trim())) ...[
+              if (remainderAfterTitle(n.title, n.preview) != null) ...[
                 const SizedBox(height: 2),
                 Text(
-                  n.preview,
+                  remainderAfterTitle(n.title, n.preview)!,
                   style: Theme.of(context).textTheme.bodySmall,
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,

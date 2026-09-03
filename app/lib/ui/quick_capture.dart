@@ -7,6 +7,8 @@ import 'package:window_manager/window_manager.dart';
 
 import '../api/client.dart';
 import '../api/models.dart';
+import '../state/dictation.dart';
+import 'widgets/mic_button.dart';
 import 'theme.dart';
 import 'widgets/common.dart';
 
@@ -44,6 +46,44 @@ class _QuickCaptureState extends State<QuickCapture> {
   Capture? _capture;
   Object? _error;
   bool _busy = false;
+  late final DictationController _dictation = DictationController(widget.api);
+  bool _dictationAvailable = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.api
+        .health()
+        .then((h) {
+          if (mounted) setState(() => _dictationAvailable = h.dictation);
+        })
+        .catchError((_) {});
+  }
+
+  @override
+  void dispose() {
+    _dictation.dispose();
+    _ctrl.dispose();
+    _focus.dispose();
+    super.dispose();
+  }
+
+  void _insert(String text) {
+    final existing = _ctrl.text.trimRight();
+    _ctrl.text = existing.isEmpty ? text : '$existing $text';
+    _ctrl.selection = TextSelection.collapsed(offset: _ctrl.text.length);
+    _focus.requestFocus();
+    setState(() {});
+  }
+
+  Future<void> _escape() async {
+    if (_dictation.isRecording) {
+      final t = await _dictation.stop();
+      if (mounted && t.isNotEmpty) _insert(t);
+      return;
+    }
+    await _close();
+  }
 
   Future<void> _close() async {
     try {
@@ -81,7 +121,7 @@ class _QuickCaptureState extends State<QuickCapture> {
     final c = _capture;
     return CallbackShortcuts(
       bindings: {
-        const SingleActivator(LogicalKeyboardKey.escape): _close,
+        const SingleActivator(LogicalKeyboardKey.escape): _escape,
         const SingleActivator(LogicalKeyboardKey.enter): _submit,
         const SingleActivator(LogicalKeyboardKey.numpadEnter): _submit,
       },
@@ -101,6 +141,12 @@ class _QuickCaptureState extends State<QuickCapture> {
                   const SizedBox(width: 6),
                   Text('Fundus', style: theme.textTheme.titleSmall),
                   const Spacer(),
+                  if (_dictationAvailable)
+                    MicButton(
+                      controller: _dictation,
+                      onText: _insert,
+                      compact: true,
+                    ),
                   const KeyHint('↵'),
                   const SizedBox(width: 6),
                   const KeyHint('Esc'),

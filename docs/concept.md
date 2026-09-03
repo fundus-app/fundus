@@ -1,6 +1,6 @@
 # Fundus: Concept 0.3
 
-**Status:** concept 0.3, backend implemented (see [Status](#status))
+**Status:** concept 0.3.5, backend and client implemented (see [Status](#status))
 **Category:** personal, self-hosted knowledge and task system with an LLM as the primary operating and organising layer
 **License:** AGPL-3.0 ([ADR-0008](decisions/ADR-0008-license.md))
 
@@ -61,11 +61,11 @@ Capture is two-phase. The API stores the input, fsyncs it and answers immediatel
 
 **5.2 Understand.** A fast triage step classifies the capture as note, idea, task/intention, question, new information on an existing topic, correction, research request, or unclear. It runs as a single structured-output call: the runtime retrieves candidate topics, notes and open tasks first, hands them to the model together with the capture, and receives one JSON document with a classification, a confidence, a summary and a list of proposed operations ([ADR-0003](decisions/ADR-0003-triage-single-shot.md)).
 
-**5.3 File.** The runtime validates the document, resolves topic names to IDs (creating topics only for recurring subjects), maps the model's vocabulary onto core operations, and commits everything as one transaction. Depending on the result it may append to an existing note, create a note or idea, create or complete a task, register another mention of an open task, or link topics.
+**5.3 File.** The runtime validates the document, resolves topic names to IDs (creating topics only for recurring subjects; when a topic is created, the notes and open tasks the model was shown that name it are attached to it, so a subject that only becomes a topic on its third capture still gathers the first two), maps the model's vocabulary onto core operations, and commits everything as one transaction. Depending on the result it may append to an existing note, create a note or idea, create or complete a task, register another mention of an open task, or link topics.
 
 **5.4 Confirm.** After every transaction the user receives a short receipt, for example:
 
-> Created idea "LLM-first knowledge appliance". Linked to Note systems, Hardware. Created task "Sketch the MVP data model". No due date.
+> Created idea "LLM-first knowledge appliance" in Note systems and Hardware. Created task "Sketch the MVP data model".
 
 The receipt is rendered by the core from the committed operations, not from a claim the model makes. Every receipt carries a transaction ID that can be undone.
 
@@ -230,6 +230,20 @@ Implemented: the Go daemon with event log, snapshots, hash-chain verification, t
 - Web content declared untrusted; the research reader gets no write tools.
 - MongoDB and Empoche code ruled out; search fixed to an in-memory index.
 - License set to AGPL-3.0; repo public, English-only UI.
+
+### 0.3.5 (2026-09-03, dictation, Gemini, current models)
+
+- Dictation: microphone in the capture bar, `POST /v1/transcribe`, `[dictation]` role in the config; OpenAI via `/audio/transcriptions`, Gemini and OpenRouter via `input_audio` in a chat completion; topic names as spelling hints; the transcript is reviewed before capture.
+- Google Gemini as a provider through its OpenAI-compatible endpoint; Ollama accepts any server address without a key.
+- Defaults moved to the current generation (OpenAI `gpt-5.6-luna` for filing, `gpt-5.6-terra` for conversation, Gemini `gemini-3.5-flash-lite` / `gemini-3.8-flash`); the wizard shows the provider's model list with the suggestions preselected, and version parsing keeps suggestions current when a new family appears.
+
+### 0.3.4 (2026-09-03, topic catch-up and polish)
+
+- Triage vocabulary gains `link` (attach a shown note or task to topics); when a plan creates a topic, the runtime also attaches the shown notes and open tasks that name it, and the objects created alongside it. Object ids in `topics` are refused instead of becoming topic names.
+- The user message names the capture's language when common function words make it obvious, which stops small models from answering an English capture in the language of the surrounding context.
+- Receipts read as one sentence: "Created task “X” in Fundus, due Fri 12 Sep." No "No due date."; pure topic links read "Linked note “X” to Fundus."
+- Client: no object ids, revisions, actor strings or provider slugs in the primary interface; receipts render references inline; detail views carry one fact row instead of chips.
+- Releases: every push to main refreshes the rolling `edge` pre-release; version tags with or without the `v` prefix publish a release.
 
 ### 0.3.3 (2026-09-03, name)
 

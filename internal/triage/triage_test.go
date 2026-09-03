@@ -73,7 +73,7 @@ func TestProcessCreatesObjectsAndTopics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(rec.Summary, `Created task “Deye: zweiten PV-String prüfen”. No due date. Linked to Deye.`) {
+	if !strings.Contains(rec.Summary, `Created task “Deye: zweiten PV-String prüfen” in Deye.`) {
 		t.Fatalf("summary %q", rec.Summary)
 	}
 	topics := c.Topics(false)
@@ -321,5 +321,150 @@ func TestParseResultRejectsBadShapes(t *testing.T) {
 	good := "```json\n" + `{"classification":"task","confidence":0.9,"summary":"x","question":null,"operations":[{"op":"task.create","text":"a","due":"2026-09-10"}]}` + "\n```"
 	if _, err := parseResult(good); err != nil {
 		t.Fatalf("rejected fenced JSON: %v", err)
+	}
+}
+
+func TestLinkAttachesShownObjectsToTopics(t *testing.T) {
+	c := newCore(t)
+	// Two earlier captures produced a note and a task without any topic.
+	rec, _ := c.Commit(context.Background(), "user:test", nil, []model.Op{
+		{Op: "note.create", Title: str("Fundus zum Einhorn machen"), Markdown: "Backlinks kassieren."},
+		{Op: "task.create", Text: "Fundus auf Product Hunt veröffentlichen"},
+	})
+	noteID, taskID := rec.Lines[0].ObjectID, rec.Lines[1].ObjectID
+	capID := capture(t, c, "Fundus braucht eine Landingpage.")
+	good := result(Result{Classification: "note", Confidence: 0.9, Summary: "Abgelegt.", Operations: []Operation{
+		{Op: "note.create", Kind: "note", Title: "Fundus Landingpage", Markdown: "Braucht eine Landingpage.", Topics: []string{"Fundus"}},
+		{Op: "link", NoteID: noteID, Topics: []string{"Fundus"}},
+		{Op: "link", TaskID: taskID, Topics: []string{"Fundus"}},
+	}})
+	out, err := triager(c, scripted(good, good)).Process(context.Background(), capID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	topics := c.Topics(false)
+	if len(topics) != 1 {
+		t.Fatalf("topics %d", len(topics))
+	}
+	for _, id := range []string{noteID, taskID} {
+		obj, _ := c.Get(id)
+		var got []string
+		switch o := obj.(type) {
+		case *model.Note:
+			got = o.Topics
+		case *model.Task:
+			got = o.Topics
+		}
+		if len(got) != 1 || got[0] != topics[0].Topic.ID {
+			t.Fatalf("%s topics %v, want %s", id, got, topics[0].Topic.ID)
+		}
+	}
+	for _, want := range []string{`Linked note “Fundus zum Einhorn machen” to Fundus.`, `Linked task “Fundus auf Product Hunt veröffentlichen” to Fundus.`} {
+		if !strings.Contains(out.Summary, want) {
+			t.Fatalf("summary %q lacks %q", out.Summary, want)
+		}
+	}
+
+	// A link to an object the model was never shown is refused and writes nothing.
+	rec, _ = c.Commit(context.Background(), "user:test", nil, []model.Op{{Op: "task.create", Text: "Steuer machen"}})
+	hidden := rec.Lines[0].ObjectID
+	capID = capture(t, c, "Fundus Logo überarbeiten.")
+	bad := result(Result{Classification: "note", Confidence: 0.9, Summary: "x", Operations: []Operation{{Op: "link", TaskID: hidden, Topics: []string{"Fundus"}}}})
+	before := c.Stats()
+	if _, err := triager(c, scripted(bad, bad)).Process(context.Background(), capID); err == nil {
+		t.Fatal("expected the hidden id to be refused")
+	}
+	if after := c.Stats(); after.Notes != before.Notes || after.Topics != before.Topics {
+		t.Fatalf("stats changed: %+v -> %+v", before, after)
+	}
+	if obj, _ := c.Get(hidden); len(obj.(*model.Task).Topics) != 0 {
+		t.Fatal("hidden task was linked")
+	}
+}
+
+func TestObjectIDsInTopicsAreRefused(t *testing.T) {
+	c := newCore(t)
+	rec, _ := c.Commit(context.Background(), "user:test", nil, []model.Op{{Op: "note.create", Title: str("Fundus"), Markdown: "x"}})
+	noteID := rec.Lines[0].ObjectID
+	capID := capture(t, c, "Fundus Landingpage bauen.")
+	// A live run once put a note id into "topics", which became a topic named after the id.
+	bad := result(Result{Classification: "task", Confidence: 0.9, Summary: "x", Operations: []Operation{{Op: "task.create", Text: "Landingpage bauen", Topics: []string{noteID}}}})
+	if _, err := triager(c, scripted(bad, bad)).Process(context.Background(), capID); err == nil {
+		t.Fatal("expected a validation error")
+	}
+	if n := len(c.Topics(false)); n != 0 {
+		t.Fatalf("%d topics created from an object id", n)
+	}
+}
+
+func TestNewTopicCatchesUpShownObjects(t *testing.T) {
+	c := newCore(t)
+	rec, _ := c.Commit(context.Background(), "user:test", nil, []model.Op{
+		{Op: "note.create", Title: str("Fundus zum Einhorn machen"), Markdown: "Backlinks kassieren."},
+		{Op: "task.create", Text: "Fundus auf Product Hunt veröffentlichen"},
+		{Op: "note.create", Title: str("Einkaufsliste"), Markdown: "Fundus ist hier nur im Text, nicht im Titel."},
+	})
+	noteID, taskID, otherID := rec.Lines[0].ObjectID, rec.Lines[1].ObjectID, rec.Lines[2].ObjectID
+	capID := capture(t, c, "Fundus braucht eine Landingpage.")
+	// The model creates the topic and a note that names it, but links nothing.
+	res := result(Result{Classification: "note", Confidence: 0.9, Summary: "Abgelegt.", Operations: []Operation{
+		{Op: "topic.create", Name: "Fundus", Kind: "project"},
+		{Op: "note.create", Kind: "note", Title: "Fundus Landingpage", Markdown: "Screenshots und Download-Button."},
+	}})
+	out, err := triager(c, scripted(res, res)).Process(context.Background(), capID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	topics := c.Topics(false)
+	if len(topics) != 1 {
+		t.Fatalf("topics %d", len(topics))
+	}
+	want := topics[0].Topic.ID
+	linked := func(id string) bool {
+		obj, _ := c.Get(id)
+		var ts []string
+		switch o := obj.(type) {
+		case *model.Note:
+			ts = o.Topics
+		case *model.Task:
+			ts = o.Topics
+		}
+		for _, x := range ts {
+			if x == want {
+				return true
+			}
+		}
+		return false
+	}
+	if !linked(noteID) || !linked(taskID) {
+		t.Fatalf("earlier objects not caught up: %s", out.Summary)
+	}
+	if linked(otherID) {
+		t.Fatalf("note that only mentions the name in its body must not be linked: %s", out.Summary)
+	}
+	var created string
+	for _, n := range c.Notes("", false) {
+		if n.NoteTitle == "Fundus Landingpage" {
+			created = n.ID
+		}
+	}
+	if created == "" || !linked(created) {
+		t.Fatalf("note created alongside the topic not linked: %s", out.Summary)
+	}
+	if !strings.Contains(out.Summary, "Linked note “Fundus zum Einhorn machen” to Fundus.") {
+		t.Fatalf("receipt: %s", out.Summary)
+	}
+}
+
+func TestMentionsName(t *testing.T) {
+	for text, name := range map[string]string{"Fundus zum Einhorn machen": "Fundus", "Das FUNDUS-Logo": "fundus", "Solar system check": "Solar system"} {
+		if !mentionsName(text, name) {
+			t.Errorf("%q should mention %q", text, name)
+		}
+	}
+	for text, name := range map[string]string{"Fundusaufnahme": "Fundus", "PV läuft": "PV", "nothing here": "Fundus"} {
+		if mentionsName(text, name) {
+			t.Errorf("%q should not mention %q", text, name)
+		}
 	}
 }

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:fundus_app/api/client.dart';
 import 'package:fundus_app/api/models.dart';
@@ -87,6 +88,7 @@ class FakeApi implements FundusApi {
     'setup_needed': true,
     'triage': <String, dynamic>{'provider': '', 'model': ''},
     'chat': <String, dynamic>{'provider': '', 'model': ''},
+    'dictation': <String, dynamic>{'provider': '', 'model': ''},
     'autonomy': <String, dynamic>{
       'min_confidence': 0.6,
       'auto_create': true,
@@ -101,6 +103,7 @@ class FakeApi implements FundusApi {
         'key_hint': '',
         'local': false,
         'oauth': false,
+        'transcription': 'audio',
       },
       'anthropic': <String, dynamic>{
         'type': 'openai',
@@ -108,6 +111,14 @@ class FakeApi implements FundusApi {
         'key_status': 'unset',
         'local': false,
         'oauth': false,
+      },
+      'gemini': <String, dynamic>{
+        'type': 'openai',
+        'base_url': 'https://generativelanguage.googleapis.com/v1beta/openai',
+        'key_status': 'unset',
+        'local': false,
+        'oauth': false,
+        'transcription': 'chat',
       },
       'openrouter': <String, dynamic>{
         'type': 'openai',
@@ -122,6 +133,7 @@ class FakeApi implements FundusApi {
         'key_status': 'unset',
         'local': true,
         'oauth': false,
+        'transcription': 'none',
       },
       'fake': <String, dynamic>{'type': 'fake'},
     },
@@ -134,6 +146,9 @@ class FakeApi implements FundusApi {
 
   /// Simulates an unreachable daemon (autostart tests).
   bool healthFails = false;
+  bool dictationOn = true;
+  final List<int> transcribed = [];
+  String transcript = 'call the dentist tomorrow';
 
   @override
   Future<Health> health() async {
@@ -144,7 +159,8 @@ class FakeApi implements FundusApi {
       triage: 'fake/heuristic',
       chat: 'fake/heuristic',
       setupNeeded: setupNeeded,
-      configuredTriage: setupNeeded ? '' : 'openai/gpt-5.4-mini',
+      configuredTriage: setupNeeded ? '' : 'openai/gpt-5.6-luna',
+      dictation: dictationOn,
     );
   }
 
@@ -172,7 +188,7 @@ class FakeApi implements FundusApi {
         provs['$name'] = p;
       });
     }
-    for (final role in ['triage', 'chat']) {
+    for (final role in ['triage', 'chat', 'dictation']) {
       if (patch[role] is Map) {
         serverSettings[role] = Map<String, dynamic>.from(patch[role] as Map);
       }
@@ -226,11 +242,45 @@ class FakeApi implements FundusApi {
         error: 'nothing is listening at http://127.0.0.1:11434/v1 (is Ollama running?)',
       );
     }
+    if (provider == 'gemini') {
+      return const ModelList(
+        models: ['gemini-3.5-flash-lite', 'gemini-3.8-flash', 'gemini-3.8-pro'],
+        suggestedTriage: 'gemini-3.5-flash-lite',
+        suggestedChat: 'gemini-3.8-flash',
+        suggestedTranscribe: 'gemini-3.8-flash',
+      );
+    }
+    if (provider == 'anthropic') {
+      return const ModelList(
+        models: ['claude-sonnet-5', 'claude-opus-5'],
+        suggestedTriage: 'claude-sonnet-5',
+        suggestedChat: 'claude-opus-5',
+      );
+    }
     return const ModelList(
-      models: ['gpt-5.4-mini', 'gpt-5.5', 'gpt-5.4-nano'],
-      suggestedTriage: 'gpt-5.4-mini',
-      suggestedChat: 'gpt-5.5',
+      models: [
+        'gpt-5.6-luna',
+        'gpt-5.6-terra',
+        'gpt-5.4-nano',
+        'gpt-transcribe',
+      ],
+      suggestedTriage: 'gpt-5.6-luna',
+      suggestedChat: 'gpt-5.6-terra',
+      suggestedTranscribe: 'gpt-transcribe',
     );
+  }
+
+  @override
+  Future<String> transcribe(Uint8List wav, {String? language}) async {
+    transcribed.add(wav.length);
+    if (!dictationOn) {
+      throw const ApiException(
+        503,
+        'dictation_unavailable',
+        'No dictation model is connected.',
+      );
+    }
+    return transcript;
   }
 
   @override

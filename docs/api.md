@@ -45,7 +45,7 @@ Other limits: at most 100 ops per `POST /v1/commands` (each capture-level plan i
 
 ### Health and stats
 
-`GET /v1/health` → `{"ok":true,"version":"dev","seq":42,"uptime_seconds":12,"triage":"openai/gpt-5.4-mini","chat":"openai/gpt-5.5","recovery":null}`. `recovery` is non-null when the event log had to cut a damaged tail at start.
+`GET /v1/health` → `{"ok":true,"version":"dev","seq":42,"uptime_seconds":12,"triage":"openai/gpt-5.6-luna","chat":"openai/gpt-5.6-terra","dictation":true,"recovery":null}`. `recovery` is non-null when the event log had to cut a damaged tail at start.
 
 `GET /v1/stats` → `{"captures","inbox","notes","ideas","open_tasks","topics","conversations","seq"}`.
 
@@ -89,8 +89,8 @@ Receipt:
 ```json
 {"txn_id":"txn_01…","seq":9,"at":"…","actor":"llm:triage/openai/gpt-5.4-mini",
  "cause":{"kind":"capture","id":"cap_01…"},
- "lines":[{"op":"task.create","object_id":"task_01…","object_type":"task","text":"Created task \"…\". No due date."}],
- "summary":"Created task \"…\". No due date.","undoable":true,"undone_by":""}
+ "lines":[{"op":"task.create","object_id":"task_01…","object_type":"task","text":"Created task \"…\" in Solar."}],
+ "summary":"Created task \"…\" in Solar.","undoable":true,"undone_by":""}
 ```
 
 Actors: `user:<client>`, `llm:triage/<provider>/<model>`, `llm:chat/<provider>/<model>`, `system`.
@@ -145,7 +145,7 @@ Progress is also streamed as `chat.step` events. Assistant text cites objects as
 | `GET /v1/changes?after=<seq>` | Receipts with seq > after, oldest first, for resuming an event stream. |
 | `GET /v1/backup` | A zip of the event log segments and the latest snapshot, taken under the write lock (consistent). |
 | `POST /v1/conversations/{id}/messages` | Body may carry `"id": "cap_…"` (client-generated capture id) to make the turn idempotent: a repeat returns the stored reply. Conversations now return `messages` as message objects (`id`, `conversation_id`, `index`, `role`, `text`, `blocks`, `capture_id`, `txn_ids`, `refs`, `created_at`, `interrupted`). |
-| `GET /v1/health` | Adds `timezone`, `ui` (embedded web UI present) and `warnings[]` (missing API keys, recovered log). |
+| `GET /v1/health` | Adds `timezone`, `ui` (embedded web UI present) and `warnings[]` (missing API keys, recovered log). 0.3.5 adds `dictation` (a usable transcription provider is configured). |
 
 SSE `capture.changed` payloads include `receipts[]`; `txn.committed` frames carry `id: <seq>`; clients resume with `GET /v1/changes?after=<last id>`. Receipts include `touched[]` (object ids the transaction changed) and an `object.changed` event `{id,type,rev,removed}` is published per touched non-capture object.
 
@@ -196,6 +196,7 @@ The model never emits core ops. Its vocabulary (`internal/triage/schema.go`) is 
 | `task.create` | `text`, `state?`, `due?`, `effort_minutes?`, `importance?`, `waiting_on?`, `topics[]` | `task.create` |
 | `task.complete` | `task_id` | `task.update` state `done` |
 | `task.mention` | `task_id` | `task.update` with `mention` |
+| `link` | `note_id` or `task_id`, `topics[]` | `note.update` / `task.update` adding topics, nothing else; used to bring earlier notes and tasks into a topic the model creates |
 | `task.update` | `task_id`, `text?`, `state?`, `due?`, `effort_minutes?`, `importance?`, `waiting_on?`, `topics[]` | `task.update` |
 | `topic.create` | `name`, `kind?`, `aliases[]` | `topic.create` (skipped when the name already exists) |
 
@@ -219,11 +220,12 @@ The daemon starts without any configuration. `GET /v1/health` reports `setup_nee
 
 | Route | Purpose |
 |---|---|
-| `GET /v1/settings` | Current settings: `path`, `listen`, `timezone`, `token_set`, `setup_needed`, `triage{provider,model}`, `chat{provider,model}`, `autonomy{…}`, `providers{name: {type, base_url, api_key_env, key_status: set|env|unset|none, key_hint, local, oauth, usable}}`. Keys are never returned. |
-| `PUT /v1/settings` | Partial update: `{triage?, chat?, timezone?, token?, autonomy?{min_confidence,auto_create,max_ops_per_capture,max_new_topics_per_capture}, providers?{name: {api_key?, base_url?, type?}}}`. Rules: an empty `api_key` clears the stored key (an environment key applies again); changing a provider's `base_url` host requires `api_key` in the same request and drops `api_key_env`; keys are refused over plain `http://` to remote hosts; changing a role's provider resets its model, so send both; the token cannot be emptied while `listen` is a network address. Errors: 400 `invalid`, 500 `internal` (could not save). Applies atomically: providers are rebuilt first, the file is written (0600, fsync, atomic rename), then triage, chat and the time zone switch; the worker is kicked. `listen` and `data_dir` need a restart. Values set by flags or environment for this process (`FUNDUS_LISTEN`, `--data`, `--fake`, `FUNDUS_TOKEN`) are never written to the file. |
+| `GET /v1/settings` | Current settings: `path`, `listen`, `timezone`, `token_set`, `setup_needed`, `triage{provider,model}`, `chat{provider,model}`, `dictation{provider,model}` (empty model = off), `autonomy{…}`, `providers{name: {type, base_url, api_key_env, key_status: set|env|unset|none, key_hint, local, oauth, usable, transcription: audio|chat|none}}`. Keys are never returned. |
+| `PUT /v1/settings` | Partial update: `{triage?, chat?, dictation?, timezone?, token?, autonomy?{min_confidence,auto_create,max_ops_per_capture,max_new_topics_per_capture}, providers?{name: {api_key?, base_url?, type?}}}`. Rules: an empty `api_key` clears the stored key (an environment key applies again); changing a provider's `base_url` host requires `api_key` in the same request and drops `api_key_env` (a provider that has no key at all, such as Ollama on another machine, may move freely); dictation follows the filing provider when that changes unless `dictation` is sent too, and its model is reset; keys are refused over plain `http://` to remote hosts; changing a role's provider resets its model, so send both; the token cannot be emptied while `listen` is a network address. Errors: 400 `invalid`, 500 `internal` (could not save). Applies atomically: providers are rebuilt first, the file is written (0600, fsync, atomic rename), then triage, chat and the time zone switch; the worker is kicked. `listen` and `data_dir` need a restart. Values set by flags or environment for this process (`FUNDUS_LISTEN`, `--data`, `--fake`, `FUNDUS_TOKEN`) are never written to the file. |
 | `POST /v1/settings/test` | `{provider, model?, api_key?, base_url?}` → capability probe (`reachable`, `structured`, `tools`, `german`, `latency`, `errors[]`, `mode`) using the given key without saving it; always 200, look at `reachable`. Without `model`, the provider's model list is consulted (400 when none can be discovered). A different `base_url` requires `api_key` in the same request. |
-| `GET /v1/setup/models?provider=x` | `{models: [ids…], suggested: {triage, chat}, error?}` from the provider's `/models` endpoint with the stored key. Unreachable or rejected endpoints come back as 200 with `error`. |
+| `GET /v1/setup/models?provider=x` | `{models: [ids…], suggested: {triage, chat, transcribe}, error?}` from the provider's `/models` endpoint with the stored key (`transcribe` is empty for providers that cannot hear). Unreachable or rejected endpoints come back as 200 with `error`. |
 | `POST /v1/setup/models` | `{provider, api_key?, base_url?}` lists with an unsaved key (never put keys in URLs). A `base_url` that differs from the stored one requires `api_key` in the same request: stored keys never follow a new endpoint. |
+| `POST /v1/transcribe` | `multipart/form-data` with field `audio` (WAV recommended, ≤ 25 MB; also mp3/webm/ogg/m4a) and optional `language` (BCP-47) → `{text, model}`. Uses the dictation provider: OpenAI through `/audio/transcriptions`, Gemini and OpenRouter through a chat completion with an `input_audio` part; topic names are passed as spelling hints. Nothing is captured: the client shows the text for review. Errors: 503 `dictation_unavailable`, 400 `bad_audio`, 502 `provider_error`. |
 | `POST /v1/setup/oauth/start` | `{provider}` → `{url}`. Only providers with a connect flow (currently OpenRouter, PKCE). Open the URL in a browser; the daemon receives `GET /setup/oauth/callback?state=…&code=…`, exchanges the code for a key, stores it and shows a confirmation page. |
 
 `fundus` with no arguments starts the daemon (or finds the running one, checking that its `instance` id in `/v1/health` matches `<data_dir>/instance`) and opens the UI in the browser (`fundus ui` opens it again later); without a terminal (desktop app, systemd) the daemon also logs to `$XDG_STATE_HOME/fundus/fundus.log` or the path given with `--log-file`/`FUNDUS_LOG_FILE`; `FUNDUS_OPEN=0` suppresses the browser, `FUNDUS_CONFIG`, `FUNDUS_DATA_DIR` and `FUNDUS_LISTEN` override paths and address.

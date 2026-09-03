@@ -3,12 +3,15 @@ package llm
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
+	"net/textproto"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +41,7 @@ type OpenAI struct {
 	auto bool
 	// legacyMaxTokens is set when the endpoint rejects max_completion_tokens.
 	legacyMaxTokens bool
+	transcription   string
 }
 
 // OpenAIOptions configures NewOpenAI.
@@ -48,6 +52,9 @@ type OpenAIOptions struct {
 	Headers    map[string]string
 	Structured StructuredMode
 	HTTPClient *http.Client
+	// Transcription is "audio" (POST /audio/transcriptions), "chat" (the
+	// recording as an input_audio part) or "none".
+	Transcription string
 }
 
 // NewOpenAI builds a provider.
@@ -59,6 +66,8 @@ func NewOpenAI(o OpenAIOptions) *OpenAI {
 		headers: o.Headers,
 		client:  o.HTTPClient,
 		mode:    o.Structured,
+
+		transcription: o.Transcription,
 	}
 	if p.client == nil {
 		p.client = &http.Client{Timeout: 10 * time.Minute}
@@ -288,4 +297,162 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// Transcribe implements Transcriber. With mode "audio" it posts the recording
+// to /audio/transcriptions (OpenAI); with "chat" it sends the recording as an
+// input_audio part of a chat completion (Gemini, OpenRouter). A 404 from the
+// audio endpoint falls back to the chat path once, so an OpenAI-compatible
+// server without a transcription endpoint still works when its model hears.
+func (p *OpenAI) Transcribe(ctx context.Context, req *TranscribeRequest) (string, error) {
+	switch p.transcription {
+	case "none":
+		return "", &Error{Provider: p.name, Message: "dictation is not available with this provider"}
+	case "chat":
+		return p.transcribeChat(ctx, req)
+	}
+	text, err := p.transcribeAudio(ctx, req)
+	var e *Error
+	if err != nil && errors.As(err, &e) && e.Status == 404 {
+		return p.transcribeChat(ctx, req)
+	}
+	return text, err
+}
+
+func (p *OpenAI) transcribeAudio(ctx context.Context, req *TranscribeRequest) (string, error) {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	_ = mw.WriteField("model", req.Model)
+	if req.Language != "" {
+		_ = mw.WriteField("language", req.Language)
+	}
+	if len(req.Hints) > 0 {
+		// The prompt steers spelling of names; it is not an instruction.
+		_ = mw.WriteField("prompt", strings.Join(req.Hints, ", "))
+	}
+	hdr := textproto.MIMEHeader{}
+	hdr.Set("Content-Disposition", `form-data; name="file"; filename="`+audioFilename(req.MIME)+`"`)
+	hdr.Set("Content-Type", req.MIME)
+	part, err := mw.CreatePart(hdr)
+	if err != nil {
+		return "", err
+	}
+	if _, err := part.Write(req.Audio); err != nil {
+		return "", err
+	}
+	if err := mw.Close(); err != nil {
+		return "", err
+	}
+	raw, err := p.post(ctx, "/audio/transcriptions", mw.FormDataContentType(), buf.Bytes())
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return "", &Error{Provider: p.name, Message: "decode transcription: " + err.Error()}
+	}
+	return strings.TrimSpace(out.Text), nil
+}
+
+func (p *OpenAI) transcribeChat(ctx context.Context, req *TranscribeRequest) (string, error) {
+	format := "wav"
+	switch req.MIME {
+	case "audio/mpeg", "audio/mp3":
+		format = "mp3"
+	case "audio/webm":
+		format = "webm"
+	case "audio/ogg":
+		format = "ogg"
+	case "audio/mp4", "audio/m4a", "audio/x-m4a":
+		format = "m4a"
+	}
+	system := "You are a transcription engine. Write down exactly what is said in the recording, in its original language, with normal punctuation. Output only the transcript: no quotes, no preamble, no commentary. If the recording is silent or unintelligible, output an empty string."
+	if len(req.Hints) > 0 {
+		system += " Names that may occur: " + strings.Join(req.Hints, ", ") + "."
+	}
+	if req.Language != "" {
+		system += " The language is " + req.Language + "."
+	}
+	body := map[string]any{
+		"model": req.Model,
+		"messages": []any{
+			map[string]any{"role": "system", "content": system},
+			map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "text", "text": "Transcribe this recording."},
+				map[string]any{"type": "input_audio", "input_audio": map[string]any{
+					"data": base64.StdEncoding.EncodeToString(req.Audio), "format": format}},
+			}},
+		},
+	}
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return "", err
+	}
+	raw, err := p.post(ctx, "/chat/completions", "application/json", buf)
+	if err != nil {
+		return "", err
+	}
+	var or oaResponse
+	if err := json.Unmarshal(raw, &or); err != nil {
+		return "", &Error{Provider: p.name, Message: "decode response: " + err.Error()}
+	}
+	if len(or.Choices) == 0 {
+		return "", &Error{Provider: p.name, Message: "no choices in response"}
+	}
+	return strings.TrimSpace(or.Choices[0].Message.Content), nil
+}
+
+// post sends one request and returns the body, mapping transport and HTTP
+// failures to *Error the same way completions do.
+func (p *OpenAI) post(ctx context.Context, path, contentType string, body []byte) ([]byte, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", contentType)
+	if p.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
+	for k, v := range p.headers {
+		httpReq.Header.Set(k, v)
+	}
+	res, err := p.client.Do(httpReq)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, &Error{Provider: p.name, Message: err.Error(), Retryable: errors.Is(ctx.Err(), context.DeadlineExceeded)}
+		}
+		var nerr net.Error
+		return nil, &Error{Provider: p.name, Message: err.Error(), Retryable: errors.As(err, &nerr) || errors.Is(err, io.EOF)}
+	}
+	defer res.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(res.Body, 32<<20))
+	if err != nil {
+		return nil, &Error{Provider: p.name, Message: "read body: " + err.Error(), Retryable: true}
+	}
+	if res.StatusCode >= 400 {
+		msg := strings.TrimSpace(string(raw))
+		var er oaResponse
+		if json.Unmarshal(raw, &er) == nil && er.Error != nil {
+			msg = er.Error.Message
+		}
+		return nil, &Error{Provider: p.name, Status: res.StatusCode, Message: truncate(msg, 500),
+			Retryable: res.StatusCode == 429 || res.StatusCode >= 500}
+	}
+	return raw, nil
+}
+
+func audioFilename(mime string) string {
+	switch mime {
+	case "audio/mpeg", "audio/mp3":
+		return "audio.mp3"
+	case "audio/webm":
+		return "audio.webm"
+	case "audio/ogg":
+		return "audio.ogg"
+	case "audio/mp4", "audio/m4a", "audio/x-m4a":
+		return "audio.m4a"
+	}
+	return "audio.wav"
 }

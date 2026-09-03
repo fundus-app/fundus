@@ -305,11 +305,16 @@ class RefChip extends StatelessWidget {
     };
   }
 
-  static String shortId(String id) {
-    final i = id.indexOf('_');
-    if (i < 0 || id.length < i + 7) return id;
-    return '${id.substring(0, i)}…${id.substring(id.length - 5)}';
-  }
+  /// What to call an object whose title is not known yet.
+  static String kindWord(String id) => switch (id.split('_').first) {
+    'note' => 'Note',
+    'task' => 'Task',
+    'topic' => 'Topic',
+    'cap' => 'Capture',
+    'src' => 'Source',
+    'conv' => 'Conversation',
+    _ => 'Item',
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -328,7 +333,7 @@ class RefChip extends StatelessWidget {
     }
     return Semantics(
       button: true,
-      label: 'Open ${label ?? id}',
+      label: 'Open ${label ?? kindWord(id)}',
       child: InkWell(
         onTap: onTap == null ? null : () => onTap!(id),
         borderRadius: BorderRadius.circular(6),
@@ -351,15 +356,11 @@ class RefChip extends StatelessWidget {
               ),
               const SizedBox(width: 4),
               Text(
-                label ?? shortId(id),
-                style: label != null
-                    ? Theme.of(context).textTheme.labelMedium!
-                          .copyWith(color: scheme.onSecondaryContainer)
-                    : monoStyle(
-                        context,
-                        size: dense ? 11 : 11.5,
-                        color: scheme.onSecondaryContainer,
-                      ),
+                label ?? kindWord(id),
+                style: Theme.of(context).textTheme.labelMedium!.copyWith(
+                  color: scheme.onSecondaryContainer,
+                  fontStyle: label == null ? FontStyle.italic : null,
+                ),
               ),
             ],
           ),

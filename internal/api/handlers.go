@@ -1,10 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -42,6 +44,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"instance":       s.core.InstanceID(),
 		"timezone":       s.core.Location().String(),
 		"ui":             webui.Built(),
+		"dictation":      cfg.DictationAvailable(),
 		"recovery":       s.core.Recovery(),
 		"warnings":       warnings,
 	})
@@ -957,4 +960,72 @@ func (c *chatSlots) release(id string) {
 	c.mu.Lock()
 	delete(c.active, id)
 	c.mu.Unlock()
+}
+
+// handleTranscribe turns one uploaded recording into text with the dictation
+// provider. The text is returned to the client for review; nothing is
+// captured here, so a bad transcript never reaches the log.
+func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
+	cfg := s.config()
+	if !cfg.DictationAvailable() {
+		writeError(w, http.StatusServiceUnavailable, "dictation_unavailable", "dictation is not set up: choose a provider with a transcription model in Settings")
+		return
+	}
+	const maxAudio = 25 << 20
+	r.Body = http.MaxBytesReader(w, r.Body, maxAudio+1<<20)
+	if err := r.ParseMultipartForm(maxAudio); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_audio", "could not read the upload (25 MB limit): "+err.Error())
+		return
+	}
+	f, hdr, err := r.FormFile("audio")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_audio", "multipart field \"audio\" is required")
+		return
+	}
+	defer f.Close()
+	audio, err := io.ReadAll(io.LimitReader(f, maxAudio+1))
+	if err != nil || len(audio) == 0 || len(audio) > maxAudio {
+		writeError(w, http.StatusBadRequest, "bad_audio", "the recording is empty or larger than 25 MB")
+		return
+	}
+	mimeType := hdr.Header.Get("Content-Type")
+	switch {
+	case bytes.HasPrefix(audio, []byte("RIFF")):
+		mimeType = "audio/wav"
+	case mimeType == "" || mimeType == "application/octet-stream":
+		mimeType = "audio/wav"
+	}
+	prov, err := s.reg.Get(cfg.Dictation.Provider)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "dictation_unavailable", err.Error())
+		return
+	}
+	tr, ok := prov.(llm.Transcriber)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "dictation_unavailable", "the dictation provider cannot transcribe")
+		return
+	}
+	// Topic names steer the spelling of proper nouns; the model never sees
+	// anything else from the store.
+	hints := []string{"Fundus"}
+	for _, tv := range s.core.Topics(false) {
+		if len(hints) >= 40 {
+			break
+		}
+		hints = append(hints, tv.Topic.Name)
+	}
+	timeout := cfg.Dictation.Timeout.Duration
+	if timeout <= 0 {
+		timeout = 2 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+	text, err := tr.Transcribe(ctx, &llm.TranscribeRequest{Model: cfg.Dictation.Model, Audio: audio, MIME: mimeType,
+		Language: strings.TrimSpace(r.FormValue("language")), Hints: hints})
+	if err != nil {
+		s.lg.Warn("transcription failed", "err", err)
+		writeError(w, http.StatusBadGateway, "provider_error", "transcription failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"text": text, "model": cfg.Dictation.Model})
 }

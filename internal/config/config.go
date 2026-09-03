@@ -29,9 +29,12 @@ type Config struct {
 	// and the listen address (e.g. "fundus.lan", "myhost.tailnet.ts.net").
 	AllowedHosts []string `toml:"allowed_hosts"`
 
-	Triage   Role   `toml:"triage"`
-	Chat     Role   `toml:"chat"`
-	Autonomy Policy `toml:"autonomy"`
+	Triage Role `toml:"triage"`
+	Chat   Role `toml:"chat"`
+	// Dictation names the provider and model that turn recorded speech into
+	// capture text. An empty model switches dictation off.
+	Dictation Role   `toml:"dictation"`
+	Autonomy  Policy `toml:"autonomy"`
 
 	Providers map[string]Provider `toml:"providers"`
 
@@ -82,6 +85,23 @@ type Provider struct {
 	// Structured selects how JSON output is requested:
 	// auto | json_schema | json_object | prompt.
 	Structured string `toml:"structured"`
+	// Transcription selects how speech is transcribed: "audio" uses the
+	// /audio/transcriptions endpoint (OpenAI), "chat" sends the recording as
+	// an input_audio part of a chat completion (Gemini, OpenRouter), "none"
+	// disables dictation for this provider. Empty means "audio".
+	Transcription string `toml:"transcription"`
+}
+
+// TranscriptionMode returns the effective transcription strategy.
+func (p Provider) TranscriptionMode() string {
+	if p.Type != "openai" {
+		return "none"
+	}
+	switch p.Transcription {
+	case "chat", "none":
+		return p.Transcription
+	}
+	return "audio"
 }
 
 // Duration is a TOML-friendly time.Duration ("30s", "2m").
@@ -105,17 +125,22 @@ func Default() *Config {
 		Listen:  "127.0.0.1:7433",
 		Triage: Role{
 			Provider:    "openai",
-			Model:       "gpt-5.4-mini",
+			Model:       "gpt-5.6-luna",
 			MaxAttempts: 3,
 			Timeout:     Duration{90 * time.Second},
 			MaxTokens:   4000,
 		},
 		Chat: Role{
 			Provider:    "openai",
-			Model:       "gpt-5.5",
+			Model:       "gpt-5.6-terra",
 			MaxAttempts: 2,
 			Timeout:     Duration{180 * time.Second},
 			MaxTokens:   8000,
+		},
+		Dictation: Role{
+			Provider: "openai",
+			Model:    "gpt-4o-mini-transcribe",
+			Timeout:  Duration{120 * time.Second},
 		},
 		Autonomy: Policy{
 			MinConfidence:          0.6,
@@ -125,23 +150,33 @@ func Default() *Config {
 		},
 		Providers: map[string]Provider{
 			"openai": {
-				Type:      "openai",
-				BaseURL:   "https://api.openai.com/v1",
-				APIKeyEnv: "OPENAI_API_KEY",
+				Type:          "openai",
+				BaseURL:       "https://api.openai.com/v1",
+				APIKeyEnv:     "OPENAI_API_KEY",
+				Transcription: "audio",
+			},
+			"gemini": {
+				Type:          "openai",
+				BaseURL:       "https://generativelanguage.googleapis.com/v1beta/openai",
+				APIKeyEnv:     "GEMINI_API_KEY",
+				Transcription: "chat",
 			},
 			"openrouter": {
-				Type:      "openai",
-				BaseURL:   "https://openrouter.ai/api/v1",
-				APIKeyEnv: "OPENROUTER_API_KEY",
+				Type:          "openai",
+				BaseURL:       "https://openrouter.ai/api/v1",
+				APIKeyEnv:     "OPENROUTER_API_KEY",
+				Transcription: "chat",
 			},
 			"anthropic": {
-				Type:      "openai",
-				BaseURL:   "https://api.anthropic.com/v1",
-				APIKeyEnv: "ANTHROPIC_API_KEY",
+				Type:          "openai",
+				BaseURL:       "https://api.anthropic.com/v1",
+				APIKeyEnv:     "ANTHROPIC_API_KEY",
+				Transcription: "none",
 			},
 			"ollama": {
-				Type:    "openai",
-				BaseURL: "http://127.0.0.1:11434/v1",
+				Type:          "openai",
+				BaseURL:       "http://127.0.0.1:11434/v1",
+				Transcription: "none",
 			},
 			"fake": {Type: "fake"},
 		},
@@ -198,10 +233,28 @@ func Load(path string) (*Config, error) {
 	cfg.overridden = map[string]bool{}
 	applyEnv(cfg)
 	cfg.DataDir = expandHome(cfg.DataDir)
+	// Files written before 0.3.5 know no transcription mode; give the
+	// well-known providers theirs so Ollama and Anthropic never receive
+	// recordings.
+	for name, p := range cfg.Providers {
+		if p.Transcription == "" {
+			p.Transcription = PresetTranscription(name)
+			cfg.Providers[name] = p
+		}
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+// PresetTranscription returns the transcription mode of a well-known provider
+// name, and "" (meaning "audio") for names it does not know.
+func PresetTranscription(name string) string {
+	if p, ok := Default().Providers[name]; ok {
+		return p.Transcription
+	}
+	return ""
 }
 
 func applyEnv(cfg *Config) {
@@ -249,6 +302,11 @@ func IsLoopbackListen(addr string) bool {
 func (c *Config) Validate() error {
 	if c.DataDir == "" {
 		return errors.New("config: data_dir is empty")
+	}
+	if c.Dictation.Provider != "" {
+		if _, ok := c.Providers[c.Dictation.Provider]; !ok {
+			return fmt.Errorf("config: dictation.provider %q is not defined under [providers]", c.Dictation.Provider)
+		}
 	}
 	for name, r := range map[string]Role{"triage": c.Triage, "chat": c.Chat} {
 		if r.Provider == "" {
@@ -332,14 +390,19 @@ listen = "127.0.0.1:7433"
 
 [triage]
 provider = "openai"
-model = "gpt-5.4-mini"
+model = "gpt-5.6-luna"
 max_attempts = 3
 timeout = "90s"
 
 [chat]
 provider = "openai"
-model = "gpt-5.5"
+model = "gpt-5.6-terra"
 timeout = "180s"
+
+# Speech to text for the microphone button. An empty model switches it off.
+[dictation]
+provider = "openai"
+model = "gpt-4o-mini-transcribe"
 
 [autonomy]
 # Below this confidence a capture is parked in the inbox instead of written.
@@ -350,24 +413,38 @@ auto_create = true
 max_ops_per_capture = 12
 max_new_topics_per_capture = 2
 
+# transcription: how dictation reaches the provider. "audio" = the
+# /audio/transcriptions endpoint, "chat" = the recording goes into a chat
+# completion as input_audio, "none" = no dictation with this provider.
 [providers.openai]
 type = "openai"
 base_url = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
+transcription = "audio"
+
+[providers.gemini]
+type = "openai"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+api_key_env = "GEMINI_API_KEY"
+transcription = "chat"
 
 [providers.openrouter]
 type = "openai"
 base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
+transcription = "chat"
 
 [providers.anthropic]
 type = "openai"
 base_url = "https://api.anthropic.com/v1"
 api_key_env = "ANTHROPIC_API_KEY"
+transcription = "none"
 
+# Local or remote Ollama: point base_url at the machine that runs it.
 [providers.ollama]
 type = "openai"
 base_url = "http://127.0.0.1:11434/v1"
+transcription = "none"
 
 # A model-free provider using simple heuristics. Useful for trying Fundus
 # without any API key: set triage.provider = "fake".
@@ -458,7 +535,9 @@ func (p Provider) Usable() bool {
 		if p.ResolveAPIKey() != "" {
 			return true
 		}
-		return p.Local()
+		// A provider that names no key source needs none (Ollama, also on
+		// another machine); one that does is unusable until the key is there.
+		return p.Local() || p.APIKeyEnv == ""
 	}
 	return false
 }
@@ -467,6 +546,16 @@ func (p Provider) Usable() bool {
 func (p Provider) Local() bool {
 	u := strings.ToLower(p.BaseURL)
 	return strings.Contains(u, "://127.0.0.1") || strings.Contains(u, "://localhost") || strings.Contains(u, "://[::1]")
+}
+
+// DictationAvailable reports whether recorded speech can be transcribed with
+// the current configuration.
+func (c *Config) DictationAvailable() bool {
+	if c.Dictation.Provider == "" || c.Dictation.Model == "" {
+		return false
+	}
+	p, ok := c.Providers[c.Dictation.Provider]
+	return ok && p.Usable() && p.TranscriptionMode() != "none"
 }
 
 // SetupNeeded is true when the triage provider cannot be used yet.

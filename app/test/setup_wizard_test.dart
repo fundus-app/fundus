@@ -56,8 +56,12 @@ void main() {
 
     // Provider, models and the key are stored together at the end.
     final last = api.settingsPatches.last;
-    expect(last['triage'], {'provider': 'openai', 'model': 'gpt-5.4-mini'});
-    expect(last['chat'], {'provider': 'openai', 'model': 'gpt-5.5'});
+    expect(last['triage'], {'provider': 'openai', 'model': 'gpt-5.6-luna'});
+    expect(last['chat'], {'provider': 'openai', 'model': 'gpt-5.6-terra'});
+    expect(last['dictation'], {
+      'provider': 'openai',
+      'model': 'gpt-transcribe',
+    });
     expect(last['providers']['openai']['api_key'], 'sk-test-1234');
     expect(api.setupNeeded, isFalse);
     expect(done, isTrue);

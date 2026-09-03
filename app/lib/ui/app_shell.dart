@@ -31,15 +31,22 @@ IconData _iconFor(AppView v) => switch (v) {
 
 /// Responsive shell: rail | list | inspector.
 class AppShell extends StatefulWidget {
-  const AppShell({super.key, this.initialView, this.initialOpen});
+  const AppShell({
+    super.key,
+    this.initialView,
+    this.initialOpen,
+    this.openSettings = false,
+  });
   final String? initialView;
   final String? initialOpen;
+  final bool openSettings;
   @override
   State<AppShell> createState() => _AppShellState();
 }
 
 class _AppShellState extends State<AppShell> {
   final _captureFocus = FocusNode();
+  final _captureBar = GlobalKey<CaptureBarState>();
   final _chatFocus = FocusNode();
   final _searchFocus = FocusNode();
   final _searchCtrl = TextEditingController();
@@ -57,6 +64,11 @@ class _AppShellState extends State<AppShell> {
       state.refreshView();
       final open = widget.initialOpen;
       if (open != null && open.isNotEmpty) state.select(open);
+      if (widget.openSettings) {
+        Future<void>.delayed(const Duration(milliseconds: 600), () {
+          if (mounted) SettingsScreen.show(context);
+        });
+      }
       // Capture first: the field has focus the moment the app is up.
       if (state.view == AppView.conversation) {
         _chatFocus.requestFocus();
@@ -116,7 +128,31 @@ class _AppShellState extends State<AppShell> {
     }
   }
 
+  Future<void> _toggleDictation() async {
+    final state = context.read<AppState>();
+    if (!state.dictationAvailable) return;
+    if (state.view == AppView.conversation) state.setView(AppView.inbox);
+    setState(() => _searchMode = false);
+    final d = state.dictation;
+    final text = await d.toggle();
+    if (!mounted) return;
+    if (d.lastError != null) {
+      showError(context, d.lastError!);
+    } else if (text.isNotEmpty) {
+      _captureBar.currentState?.insertText(text);
+    }
+  }
+
   void _escape() {
+    final d = context.read<AppState>().dictation;
+    if (d.isRecording) {
+      d.stop().then((text) {
+        if (mounted && text.isNotEmpty) {
+          _captureBar.currentState?.insertText(text);
+        }
+      });
+      return;
+    }
     if (_searchMode) {
       _toggleSearch();
       return;
@@ -169,6 +205,13 @@ class _AppShellState extends State<AppShell> {
       const SingleActivator(LogicalKeyboardKey.keyN, control: true):
           _focusCapture,
       const SingleActivator(LogicalKeyboardKey.keyN, meta: true): _focusCapture,
+      const SingleActivator(
+        LogicalKeyboardKey.keyK,
+        control: true,
+        shift: true,
+      ): _toggleDictation,
+      const SingleActivator(LogicalKeyboardKey.keyK, meta: true, shift: true):
+          _toggleDictation,
       const SingleActivator(LogicalKeyboardKey.keyF, control: true):
           _toggleSearch,
       const SingleActivator(LogicalKeyboardKey.keyF, meta: true): _toggleSearch,
@@ -192,6 +235,7 @@ class _AppShellState extends State<AppShell> {
 
     final listPane = _ListPane(
       captureFocus: _captureFocus,
+      captureBarKey: _captureBar,
       chatFocus: _chatFocus,
       searchFocus: _searchFocus,
       searchCtrl: _searchCtrl,
@@ -295,11 +339,22 @@ class _AppShellState extends State<AppShell> {
       );
     }
 
+    // Floating toasts sit above the bottom navigation on phones; on wider
+    // layouts they are inset past the rail so they never cover the gear.
+    final theme = Theme.of(context);
+    final toastTheme = theme.snackBarTheme.copyWith(
+      insetPadding: narrow
+          ? const EdgeInsets.fromLTRB(16, 0, 16, 12)
+          : const EdgeInsets.fromLTRB(72 + 16, 0, 16, 16),
+    );
     return RefLabels(
       source: state.refs,
-      child: CallbackShortcuts(
-        bindings: bindings,
-        child: Focus(autofocus: true, child: body),
+      child: Theme(
+        data: theme.copyWith(snackBarTheme: toastTheme),
+        child: CallbackShortcuts(
+          bindings: bindings,
+          child: Focus(autofocus: true, child: body),
+        ),
       ),
     );
   }
@@ -634,6 +689,7 @@ class _WarningsBanner extends StatelessWidget {
 class _ListPane extends StatelessWidget {
   const _ListPane({
     required this.captureFocus,
+    required this.captureBarKey,
     required this.chatFocus,
     required this.searchFocus,
     required this.searchCtrl,
@@ -642,6 +698,7 @@ class _ListPane extends StatelessWidget {
     required this.onOpen,
   });
   final FocusNode captureFocus;
+  final GlobalKey<CaptureBarState> captureBarKey;
   final FocusNode chatFocus;
   final FocusNode searchFocus;
   final TextEditingController searchCtrl;
@@ -765,7 +822,11 @@ class _ListPane extends StatelessWidget {
               onChanged: (q) => state.search(q),
             )
           else
-            CaptureBar(focusNode: captureFocus, onOpen: onOpen),
+            CaptureBar(
+              key: captureBarKey,
+              focusNode: captureFocus,
+              onOpen: onOpen,
+            ),
           if (!searchMode && (state.stats?.captures ?? 1) == 0)
             const CaptureHint(),
           ViewHeader(view: view, count: count, trailing: searchButton),

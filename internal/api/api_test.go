@@ -2,11 +2,13 @@ package api
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -596,5 +598,87 @@ func TestOAuthCallbackEndToEnd(t *testing.T) {
 	saved, _ := os.ReadFile(e.cfg.Path)
 	if !strings.Contains(string(saved), "sk-or-v1-fromoauth") {
 		t.Fatal("oauth key not persisted")
+	}
+}
+
+func TestTranscribeEndpoint(t *testing.T) {
+	// A fake OpenAI-compatible endpoint that answers the audio path.
+	var gotPrompt string
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/audio/transcriptions" {
+			w.WriteHeader(404)
+			return
+		}
+		_ = r.ParseMultipartForm(1 << 20)
+		gotPrompt = r.FormValue("prompt")
+		_, _ = io.WriteString(w, `{"text":"Fundus needs a landing page."}`)
+	}))
+	defer fake.Close()
+	e := newEnv(t, "", func(cfg *config.Config) {
+		cfg.Providers["openai"] = config.Provider{Type: "openai", BaseURL: fake.URL, APIKey: "k", Transcription: "audio"}
+		cfg.Dictation = config.Role{Provider: "openai", Model: "gpt-transcribe"}
+	})
+	// Health advertises dictation.
+	code, raw := e.call(t, "GET", "/v1/health", nil, nil)
+	if code != 200 || !strings.Contains(string(raw), `"dictation":true`) {
+		t.Fatalf("health: %d %s", code, raw)
+	}
+	// A topic name becomes a spelling hint.
+	e.call(t, "POST", "/v1/commands", map[string]any{"ops": []map[string]any{{"op": "topic.create", "name": "Deye"}}}, nil)
+
+	upload := func(field string, data []byte, contentType string) (int, []byte) {
+		var buf bytes.Buffer
+		mw := multipart.NewWriter(&buf)
+		part, _ := mw.CreateFormFile(field, "rec.wav")
+		_, _ = part.Write(data)
+		_ = mw.WriteField("language", "en")
+		_ = mw.Close()
+		ct := mw.FormDataContentType()
+		if contentType != "" {
+			ct = contentType
+		}
+		req, _ := http.NewRequest("POST", e.srv.URL+"/v1/transcribe", &buf)
+		req.Header.Set("Content-Type", ct)
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		body, _ := io.ReadAll(res.Body)
+		return res.StatusCode, body
+	}
+	code, raw = upload("audio", []byte("RIFF....WAVEfmt "), "")
+	if code != 200 || !strings.Contains(string(raw), "landing page") {
+		t.Fatalf("transcribe: %d %s", code, raw)
+	}
+	if !strings.Contains(gotPrompt, "Fundus") || !strings.Contains(gotPrompt, "Deye") {
+		t.Fatalf("hints not passed: %q", gotPrompt)
+	}
+	if code, raw = upload("file", []byte("abc"), ""); code != 400 {
+		t.Fatalf("wrong field: %d %s", code, raw)
+	}
+	if code, raw = upload("audio", []byte("abc"), "application/json"); code != 400 && code != 415 {
+		t.Fatalf("json content type: %d %s", code, raw)
+	}
+	// Without a usable dictation provider the endpoint says so.
+	off := newEnv(t, "")
+	code, raw = off.call(t, "GET", "/v1/health", nil, nil)
+	if !strings.Contains(string(raw), `"dictation":false`) {
+		t.Fatalf("health without dictation: %s", raw)
+	}
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	part, _ := mw.CreateFormFile("audio", "rec.wav")
+	_, _ = part.Write([]byte("RIFF"))
+	_ = mw.Close()
+	req, _ := http.NewRequest("POST", off.srv.URL+"/v1/transcribe", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 503 {
+		t.Fatalf("dictation off: %d", res.StatusCode)
 	}
 }

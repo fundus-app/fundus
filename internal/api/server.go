@@ -171,6 +171,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /v1/settings", s.handleSettingsGet)
 	m.HandleFunc("PUT /v1/settings", s.handleSettingsPut)
 	m.HandleFunc("POST /v1/settings/test", s.handleSettingsTest)
+	m.HandleFunc("POST /v1/transcribe", s.handleTranscribe)
 	m.HandleFunc("GET /v1/setup/models", s.handleSetupModels)
 	m.HandleFunc("POST /v1/setup/models", s.handleSetupModels)
 	m.HandleFunc("POST /v1/setup/oauth/start", s.handleOAuthStart)
@@ -211,7 +212,8 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			writeError(w, http.StatusForbidden, "cross_site", "cross-site requests are not allowed")
 			return
 		}
-		if (r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch) && !jsonBody(r) {
+		if (r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch) && !jsonBody(r) &&
+			!(r.URL.Path == "/v1/transcribe" && multipartBody(r)) {
 			writeError(w, http.StatusUnsupportedMediaType, "content_type", "Content-Type must be application/json")
 			return
 		}
@@ -414,6 +416,13 @@ type apiError struct {
 		Message string `json:"message"`
 		Details any    `json:"details,omitempty"`
 	} `json:"error"`
+}
+
+// multipartBody reports whether the request carries a multipart form (the
+// recording upload). The Origin and Host checks above still apply to it.
+func multipartBody(r *http.Request) bool {
+	mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	return err == nil && mt == "multipart/form-data"
 }
 
 func writeError(w http.ResponseWriter, status int, code, msg string) {

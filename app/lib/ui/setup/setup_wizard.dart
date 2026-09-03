@@ -49,6 +49,14 @@ const providerChoices = [
     keyLabel: 'console.anthropic.com/settings/keys',
   ),
   ProviderChoice(
+    name: 'gemini',
+    title: 'Google Gemini',
+    blurb:
+        'Gemini models. Fast filing, capable conversation, dictation included.',
+    keyUrl: 'https://aistudio.google.com/apikey',
+    keyLabel: 'aistudio.google.com/apikey',
+  ),
+  ProviderChoice(
     name: 'openrouter',
     title: 'OpenRouter',
     blurb: 'One key for many models. Connect with OpenRouter, or paste a key.',
@@ -69,6 +77,20 @@ const providerChoices = [
     none: true,
   ),
 ];
+
+/// "gpt-5.4-mini (OpenAI)" or "rules", from a `provider/model` pair or string.
+String modelDisplay(String providerModel, [String? model]) {
+  var provider = providerModel;
+  var m = model;
+  if (m == null) {
+    final i = providerModel.indexOf('/');
+    provider = i < 0 ? '' : providerModel.substring(0, i);
+    m = i < 0 ? providerModel : providerModel.substring(i + 1);
+  }
+  if (provider == 'fake' || m == 'heuristic') return 'rules';
+  if (provider.isEmpty) return m;
+  return '$m (${providerTitle(provider)})';
+}
 
 /// Title of a provider by name (falls back to the name).
 String providerTitle(String name) =>
@@ -113,7 +135,10 @@ class _SetupWizardState extends State<SetupWizard> {
   int? _ollamaCount;
   String _triage = '';
   String _chat = '';
+  String _transcribe = '';
   bool _oauthWaiting = false;
+  final _ollamaUrl = TextEditingController();
+  bool _ollamaOther = false;
 
   @override
   void initState() {
@@ -124,6 +149,7 @@ class _SetupWizardState extends State<SetupWizard> {
   @override
   void dispose() {
     _key.dispose();
+    _ollamaUrl.dispose();
     _continueFocus.dispose();
     super.dispose();
   }
@@ -154,7 +180,11 @@ class _SetupWizardState extends State<SetupWizard> {
       _step = c.none ? _Step.saving : _Step.credentials;
     });
     if (c.none) _saveNone();
-    if (c.local) _loadModels();
+    if (c.local) {
+      _ollamaUrl.text =
+          _settings?.provider('ollama')?.baseUrl ?? 'http://127.0.0.1:11434/v1';
+      _loadModels();
+    }
   }
 
   void _back() {
@@ -246,7 +276,28 @@ class _SetupWizardState extends State<SetupWizard> {
         ? m.suggestedTriage
         : (m.models.isNotEmpty ? m.models.first : '');
     _chat = m.suggestedChat.isNotEmpty ? m.suggestedChat : _triage;
+    _transcribe = m.suggestedTranscribe;
     if (_choice?.local == true) _ollamaCount = m.models.length;
+  }
+
+  /// Saves a new Ollama address (no key needed) and lists its models.
+  Future<void> _saveOllamaUrl() async {
+    final url = _ollamaUrl.text.trim();
+    final current = _settings?.provider('ollama')?.baseUrl ?? '';
+    if (url.isEmpty || url == current) return;
+    setState(() => _busy = true);
+    try {
+      _settings = await _api.updateSettings({
+        'providers': {
+          'ollama': {'base_url': url},
+        },
+      });
+    } catch (e) {
+      setState(() => _error = e);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+    await _loadModels();
   }
 
   Future<void> _oauth() async {
@@ -328,6 +379,10 @@ class _SetupWizardState extends State<SetupWizard> {
       await _api.updateSettings({
         'triage': {'provider': c.name, 'model': _triage},
         'chat': {'provider': c.name, 'model': _chat},
+        'dictation': {
+          'provider': _transcribe.isEmpty ? '' : c.name,
+          'model': _transcribe,
+        },
         if (_pendingKey.isNotEmpty)
           'providers': {
             c.name: {'api_key': _pendingKey},
@@ -492,10 +547,31 @@ class _SetupWizardState extends State<SetupWizard> {
         _BackRow(title: c.title, onBack: _back),
         const SizedBox(height: 12),
         if (c.local) ...[
-          Text(
-            'Ollama runs on this machine. Fundus talks to it at ${info?.baseUrl ?? 'http://127.0.0.1:11434/v1'}.',
-            style: theme.textTheme.bodyMedium,
-          ),
+          if (!_ollamaOther)
+            LinkedText(
+              style: theme.textTheme.bodyMedium,
+              parts: [
+                TextPart(
+                  'Fundus talks to Ollama at ${_ollamaUrl.text.isEmpty ? 'http://127.0.0.1:11434/v1' : _ollamaUrl.text}. ',
+                ),
+                TextPart(
+                  'Use another machine',
+                  onTap: () => setState(() => _ollamaOther = true),
+                ),
+              ],
+            )
+          else
+            TextField(
+              key: const Key('ollama-url'),
+              controller: _ollamaUrl,
+              decoration: const InputDecoration(
+                labelText: 'Ollama address',
+                hintText: 'http://127.0.0.1:11434/v1',
+                isDense: true,
+              ),
+              onSubmitted: (_) => _saveOllamaUrl(),
+              onEditingComplete: _saveOllamaUrl,
+            ),
           const SizedBox(height: 12),
           if (_models == null && _modelsError == null)
             const LinearProgressIndicator(minHeight: 2),
@@ -648,25 +724,45 @@ class _SetupWizardState extends State<SetupWizard> {
         ],
         if (m != null) ...[
           Text(
-            'The filing model reads every capture: pick something fast and cheap. The conversation model answers questions: pick something capable.',
+            'Recommended models are preselected. You can also type a model name that is not in the list.',
             style: theme.textTheme.bodySmall,
           ),
           const SizedBox(height: 14),
-          ModelPicker(
+          RoleModelPicker(
             key: const Key('model-triage'),
-            label: 'Filing model (fast)',
+            label: 'Filing',
+            hint: 'reads every capture: fast and cheap',
             models: m.models,
+            recommended: m.suggestedTriage,
             value: _triage,
             onChanged: (v) => setState(() => _triage = v),
           ),
           const SizedBox(height: 12),
-          ModelPicker(
+          RoleModelPicker(
             key: const Key('model-chat'),
-            label: 'Conversation model (capable)',
+            label: 'Conversation',
+            hint: 'answers questions: capable',
             models: m.models,
+            recommended: m.suggestedChat,
             value: _chat,
             onChanged: (v) => setState(() => _chat = v),
           ),
+          const SizedBox(height: 12),
+          if (m.suggestedTranscribe.isNotEmpty)
+            RoleModelPicker(
+              key: const Key('model-transcribe'),
+              label: 'Dictation',
+              hint: 'turns recordings into text',
+              models: m.models,
+              recommended: m.suggestedTranscribe,
+              value: _transcribe,
+              onChanged: (v) => setState(() => _transcribe = v),
+            )
+          else
+            Text(
+              'Dictation: not available with this provider.',
+              style: secondaryStyle(context),
+            ),
           const SizedBox(height: 18),
           Row(
             children: [
@@ -824,40 +920,157 @@ class ProbeView extends StatelessWidget {
   }
 }
 
-/// A searchable model dropdown.
-class ModelPicker extends StatelessWidget {
-  const ModelPicker({
+/// One role's model: a text field with a filtered list of the provider's
+/// models; the recommended one is preselected and marked. Any name may be
+/// typed, even one not in the list.
+class RoleModelPicker extends StatefulWidget {
+  const RoleModelPicker({
     super.key,
     required this.label,
     required this.models,
     required this.value,
     required this.onChanged,
+    this.recommended = '',
+    this.hint = '',
   });
   final String label;
+  final String hint;
   final List<String> models;
+  final String recommended;
   final String value;
   final ValueChanged<String> onChanged;
   @override
+  State<RoleModelPicker> createState() => _RoleModelPickerState();
+}
+
+class _RoleModelPickerState extends State<RoleModelPicker> {
+  late final TextEditingController _ctrl = TextEditingController(
+    text: widget.value,
+  );
+  final _focus = FocusNode();
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    _focus.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return DropdownMenu<String>(
-      label: Text(label),
-      initialSelection: models.contains(value) ? value : null,
-      enableFilter: true,
-      enableSearch: true,
-      requestFocusOnTap: true,
-      expandedInsets: EdgeInsets.zero,
-      menuHeight: 320,
-      textStyle: monoStyle(
-        context,
-        size: 13,
-        color: Theme.of(context).colorScheme.onSurface,
-      ),
-      dropdownMenuEntries: [
-        for (final m in models) DropdownMenuEntry(value: m, label: m),
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final many = widget.models.length > 20;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Text(widget.label, style: theme.textTheme.titleSmall),
+            if (widget.hint.isNotEmpty) ...[
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  widget.hint,
+                  style: secondaryStyle(context),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ],
+        ),
+        const SizedBox(height: 6),
+        RawAutocomplete<String>(
+          textEditingController: _ctrl,
+          focusNode: _focus,
+          optionsBuilder: (v) {
+            final q = v.text.trim().toLowerCase();
+            final all = widget.models;
+            final list = q.isEmpty || !many
+                ? all
+                : all.where((m) => m.toLowerCase().contains(q)).toList();
+            final sorted = [...list]
+              ..sort((a, b) {
+                if (a == widget.recommended) return -1;
+                if (b == widget.recommended) return 1;
+                return a.compareTo(b);
+              });
+            return sorted;
+          },
+          onSelected: (m) {
+            _ctrl.text = m;
+            widget.onChanged(m);
+          },
+          fieldViewBuilder: (context, ctrl, focus, onSubmit) => TextField(
+            controller: ctrl,
+            focusNode: focus,
+            style: monoStyle(context, size: 13, color: scheme.onSurface),
+            decoration: InputDecoration(
+              hintText: widget.recommended.isEmpty
+                  ? 'model name'
+                  : widget.recommended,
+              isDense: true,
+              suffixIcon: const Icon(Icons.arrow_drop_down_rounded),
+              helperText: many
+                  ? 'Type to search ${widget.models.length} models'
+                  : null,
+            ),
+            onChanged: widget.onChanged,
+            onSubmitted: (_) => onSubmit(),
+          ),
+          optionsViewBuilder: (context, onSelected, options) => Align(
+            alignment: Alignment.topLeft,
+            child: Material(
+              elevation: 2,
+              borderRadius: BorderRadius.circular(8),
+              color: scheme.surfaceContainerLowest,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(
+                  maxHeight: 280,
+                  maxWidth: 512,
+                ),
+                child: ListView(
+                  shrinkWrap: true,
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  children: [
+                    for (final m in options)
+                      InkWell(
+                        onTap: () => onSelected(m),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 8,
+                          ),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  m,
+                                  style: monoStyle(
+                                    context,
+                                    size: 13,
+                                    color: scheme.onSurface,
+                                  ),
+                                ),
+                              ),
+                              if (m == widget.recommended)
+                                Text(
+                                  'recommended',
+                                  style: secondaryStyle(context)
+                                      .copyWith(color: scheme.primary),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
       ],
-      onSelected: (v) {
-        if (v != null) onChanged(v);
-      },
     );
   }
 }
@@ -1070,13 +1283,23 @@ class _ProviderSectionState extends State<ProviderSection> {
           )
         else ...[
           Text(
-            'Filing model: ${modelLabel(s.triage.provider, s.triage.model)}',
+            'Filing model: ${modelDisplay(s.triage.provider, s.triage.model)}',
             style: mono,
           ),
           Text(
-            'Conversation model: ${modelLabel(s.chat.provider, s.chat.model)}',
+            'Conversation model: ${modelDisplay(s.chat.provider, s.chat.model)}',
             style: mono,
           ),
+          Text(
+            s.dictation.model.isEmpty
+                ? 'Dictation: not available with ${providerTitle(s.triage.provider)}'
+                : 'Dictation: ${modelDisplay(s.dictation.provider, s.dictation.model)}',
+            style: mono,
+          ),
+          if (s.triage.provider == 'ollama') ...[
+            const SizedBox(height: 8),
+            _OllamaAddress(current: prov?.baseUrl ?? '', onSaved: _load),
+          ],
           if (prov != null && prov.needsKey)
             Text(
               prov.hasKey
@@ -1136,7 +1359,10 @@ class _ProviderSectionState extends State<ProviderSection> {
               ),
             ),
           ),
-        Text('Config file: ${s.path}', style: theme.textTheme.labelSmall),
+        Text(
+          'Configuration file: ${s.path}',
+          style: theme.textTheme.labelSmall,
+        ),
       ],
     );
   }
@@ -1308,4 +1534,59 @@ class _AutonomySectionState extends State<AutonomySection> {
       ],
     );
   }
+}
+
+/// Ollama address for the settings screen; saves on submit or blur.
+class _OllamaAddress extends StatefulWidget {
+  const _OllamaAddress({required this.current, required this.onSaved});
+  final String current;
+  final VoidCallback onSaved;
+  @override
+  State<_OllamaAddress> createState() => _OllamaAddressState();
+}
+
+class _OllamaAddressState extends State<_OllamaAddress> {
+  late final TextEditingController _ctrl = TextEditingController(
+    text: widget.current,
+  );
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    final url = _ctrl.text.trim();
+    if (url.isEmpty || url == widget.current) return;
+    try {
+      await context.read<AppState>().api.updateSettings({
+        'providers': {
+          'ollama': {'base_url': url},
+        },
+      });
+      if (mounted) {
+        showSaved(context);
+        widget.onSaved();
+      }
+    } catch (e) {
+      if (mounted) showError(context, e);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Focus(
+    onFocusChange: (f) {
+      if (!f) _save();
+    },
+    child: TextField(
+      key: const Key('ollama-url'),
+      controller: _ctrl,
+      decoration: const InputDecoration(
+        labelText: 'Ollama address',
+        hintText: 'http://127.0.0.1:11434/v1',
+        isDense: true,
+      ),
+      onSubmitted: (_) => _save(),
+    ),
+  );
 }

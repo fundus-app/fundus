@@ -123,7 +123,7 @@ void main() {
     expect(captureStatusLabel('processing'), 'Being filed');
     expect(captureSourceLabel('desktop'), 'from the desktop app');
     expect(modelLabel('fake', 'heuristic'), 'rules');
-    expect(modelLabel('openai', 'gpt-5.4-mini'), 'openai/gpt-5.4-mini');
+    expect(modelLabel('openai', 'gpt-5.4-mini'), 'gpt-5.4-mini');
     expect(
       const Receipt(txnId: 't', actor: 'llm:triage/fake/heuristic').modelName,
       'rules',

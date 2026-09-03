@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../api/client.dart';
 import '../api/models.dart';
+import 'dictation.dart';
 import 'ref_resolver.dart';
 
 /// The navigable views.
@@ -81,7 +82,9 @@ class AppState extends ChangeNotifier {
     this.daemonStarter,
     this.instanceStore,
     this.daemonLogPath,
-  }) : refs = RefResolver(api) {
+    Recorder? recorder,
+  }) : refs = RefResolver(api),
+       dictation = DictationController(api, recorder: recorder) {
     _sub = api.events().listen(_onEvent, onError: (_) {});
     _countAttention();
     if (api is HttpFundusApi) {
@@ -99,6 +102,12 @@ class AppState extends ChangeNotifier {
   final FundusApi api;
   final RefResolver refs;
   final DaemonStarter? daemonStarter;
+
+  /// Dictation for the capture bar (shared with the Ctrl Shift K shortcut).
+  final DictationController dictation;
+
+  /// The daemon has a dictation model configured.
+  bool get dictationAvailable => health?.dictation ?? false;
 
   /// Remembers the instance id per server (shared preferences); null in tests.
   final InstanceStore? instanceStore;
@@ -181,6 +190,7 @@ class AppState extends ChangeNotifier {
     _refreshDebounce?.cancel();
     _healthTimer?.cancel();
     refs.dispose();
+    dictation.dispose();
     if (api is HttpFundusApi) (api as HttpFundusApi).close();
     super.dispose();
   }

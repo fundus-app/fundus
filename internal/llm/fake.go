@@ -7,6 +7,18 @@ type Fake struct {
 	ProviderName string
 	Fn           func(ctx context.Context, req *Request) (*Response, error)
 	Calls        []*Request
+	// TranscribeFn makes the fake a Transcriber; nil means "cannot".
+	TranscribeFn func(ctx context.Context, req *TranscribeRequest) (string, error)
+	Transcribed  []*TranscribeRequest
+}
+
+// Transcribe implements Transcriber when TranscribeFn is set.
+func (f *Fake) Transcribe(ctx context.Context, req *TranscribeRequest) (string, error) {
+	f.Transcribed = append(f.Transcribed, req)
+	if f.TranscribeFn == nil {
+		return "", &Error{Provider: f.Name(), Message: "this provider cannot transcribe"}
+	}
+	return f.TranscribeFn(ctx, req)
 }
 
 func (f *Fake) Name() string {

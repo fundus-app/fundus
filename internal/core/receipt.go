@@ -120,10 +120,11 @@ func renderReceipt(txn *model.Txn, lookup, before func(string) model.Object) *mo
 			if op.Kind == string(model.NoteKindIdea) {
 				kind = "idea"
 			}
-			text = fmt.Sprintf("Created %s “%s”.", kind, name())
+			text = fmt.Sprintf("Created %s “%s”", kind, name())
 			if tn := topicNames(op.Topics); tn != "" {
-				text += " Linked to " + tn + "."
+				text += " in " + tn
 			}
+			text += "."
 		case "note.revise":
 			appendOnly := true
 			for _, e := range op.Edits {
@@ -155,29 +156,31 @@ func renderReceipt(txn *model.Txn, lookup, before func(string) model.Object) *mo
 			}
 			if len(parts) == 0 {
 				text = fmt.Sprintf("Note “%s” unchanged.", name())
+			} else if tn := topicNames(newTopics(op.AddTopics)); len(parts) == 1 && tn != "" {
+				text = fmt.Sprintf("Linked note “%s” to %s.", name(), tn)
 			} else {
 				text = fmt.Sprintf("Updated note “%s”: %s.", name(), strings.Join(parts, ", "))
 			}
 		case "note.set_markdown":
 			text = fmt.Sprintf("Edited note “%s”.", name())
 		case "task.create":
-			text = fmt.Sprintf("Created task “%s”.", name())
-			switch op.State {
-			case string(model.TaskLater):
-				text += " Deferred to later."
-			case string(model.TaskWaiting):
-				text += " Waiting."
-			case string(model.TaskDone):
-				text += " Already done."
+			// One sentence: Created task “X” in Fundus, due Fri 12 Sep, deferred to later.
+			text = fmt.Sprintf("Created task “%s”", name())
+			if tn := topicNames(op.Topics); tn != "" {
+				text += " in " + tn
 			}
 			if op.Due != nil && *op.Due != "" {
-				text += " Due " + humanDate(*op.Due) + "."
-			} else {
-				text += " No due date."
+				text += ", due " + humanDate(*op.Due)
 			}
-			if tn := topicNames(op.Topics); tn != "" {
-				text += " Linked to " + tn + "."
+			switch op.State {
+			case string(model.TaskLater):
+				text += ", deferred to later"
+			case string(model.TaskWaiting):
+				text += ", waiting"
+			case string(model.TaskDone):
+				text += ", already done"
 			}
+			text += "."
 		case "task.update":
 			prevState := ""
 			if pt, ok := prev.(*model.Task); ok {
@@ -232,6 +235,8 @@ func renderReceipt(txn *model.Txn, lookup, before func(string) model.Object) *mo
 				}
 				if len(parts) == 0 {
 					text = fmt.Sprintf("Task “%s” unchanged.", name())
+				} else if tn := topicNames(newTopics(op.AddTopics)); len(parts) == 1 && tn != "" {
+					text = fmt.Sprintf("Linked task “%s” to %s.", name(), tn)
 				} else {
 					text = fmt.Sprintf("Updated task “%s”: %s.", name(), strings.Join(parts, ", "))
 				}

@@ -31,7 +31,7 @@ Rules:
 4. Create a task only for a concrete intention or obligation. A vague "maybe someday" is an idea, not a task. When the user says they already did something, or reports that the problem behind an open task is resolved, use task.complete on the matching open task; add a note.append or note.create for the explanation when it carries information worth keeping.
 5. Never invent due dates, priorities or effort. Set them only when the capture states them. Resolve relative dates ("tomorrow", "next Friday") using the current date given in the context.
 6. If the capture mentions an existing open task again, use task.mention with its id (this raises its attention) instead of creating a duplicate.
-7. Topics: reuse existing topics by id whenever the capture concerns them. Create a new topic (by giving a new name in "topics", or with topic.create) only when the subject is likely to recur: a project, a system, a place, a person, a recurring theme. Prefer one broad topic over several narrow ones (e.g. "Solar system" rather than "Deye", "String 2" and "Snow"); at most two new topics per capture; never a topic for a tool or product that is merely mentioned in passing. Persons the user talks about repeatedly get kind "person". Link an object only to topics it is really about, not to every topic mentioned nearby.
+7. Topics: reuse existing topics by id whenever the capture concerns them. Create a new topic (by giving a new name in "topics", or with topic.create) only when the subject is likely to recur: a project, a system, a place, a person, a recurring theme. Prefer one broad topic over several narrow ones (e.g. "Solar system" rather than "Deye", "String 2" and "Snow"); at most two new topics per capture. When you create a topic, also attach the notes and open tasks from the context that clearly belong to it, with one link operation per object (note_id or task_id plus "topics"); the context shows each object with its current topics. Do the same when an existing topic clearly fits a shown object that lacks it. Never link on a vague resemblance. Every note and task you create carries its topics in "topics", including a topic you create in the same answer, referenced by its name. never a topic for a tool or product that is merely mentioned in passing. Persons the user talks about repeatedly get kind "person". Link an object only to topics it is really about, not to every topic mentioned nearby.
 8. Titles are short noun phrases (max ~8 words). Bodies are plain Markdown: paragraphs, "- " lists, "> " quotes, "#" headings. No HTML, no tables.
 9. Summary: one short sentence saying what was filed, for the receipt. Write it in the language of the capture text itself, never in another language. Do not claim things you did not do.
 10. Confidence: how sure you are that this filing is what the user wanted (0-1). Below 0.6 the system parks the capture for review, so use low values only when a wrong filing would be worse than a delay.
@@ -109,7 +109,11 @@ func userMessage(ctx *Context) string {
 		"open_tasks":       ctx.Tasks,
 	})
 	sb.WriteString("</context>\n")
-	sb.WriteString("\nFile this capture. The capture text sets the language for the summary, the question and every title or task text. Respond with the JSON object only.")
+	if lang := guessLanguage(ctx.Capture.Text); lang != "" {
+		fmt.Fprintf(&sb, "\nFile this capture. The capture text is in %s: write the summary, the question and every title or task text in %s. Respond with the JSON object only.", lang, lang)
+	} else {
+		sb.WriteString("\nFile this capture. The capture text sets the language for the summary, the question and every title or task text. Respond with the JSON object only.")
+	}
 	return sb.String()
 }
 

@@ -256,26 +256,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Fundus ${state.health?.version ?? ''}  ·  client ${kIsWeb ? 'web' : defaultTargetPlatform.name}',
+                  'Fundus ${state.health?.version ?? ''}  ·  ${kIsWeb ? 'web app' : 'desktop app'}',
                 ),
                 if (state.health != null) ...[
-                  Text(
-                    'filing model: ${state.health!.triage == 'fake/heuristic' ? 'rules' : state.health!.triage}',
-                    style: monoStyle(context),
+                  _AboutRow('Filing model', modelDisplay(state.health!.triage)),
+                  _AboutRow(
+                    'Conversation model',
+                    modelDisplay(state.health!.chat),
                   ),
                   Text(
-                    'conversation model: ${state.health!.chat == 'fake/heuristic' ? 'rules' : state.health!.chat}',
-                    style: monoStyle(context),
-                  ),
-                  Text(
-                    'log position ${state.health!.seq}',
-                    style: monoStyle(context),
+                    'Event log: ${_thousands(state.health!.seq)} ${state.health!.seq == 1 ? 'entry' : 'entries'}',
                   ),
                   if (state.health!.timezone.isNotEmpty)
-                    Text(
-                      'time zone ${state.health!.timezone}',
-                      style: monoStyle(context),
-                    ),
+                    Text('Time zone: ${state.health!.timezone}'),
                 ],
                 const SizedBox(height: 6),
                 const Text(
@@ -306,6 +299,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 }
 
+String _thousands(int n) {
+  final s = n.toString();
+  final out = StringBuffer();
+  for (var i = 0; i < s.length; i++) {
+    if (i > 0 && (s.length - i) % 3 == 0) out.write(',');
+    out.write(s[i]);
+  }
+  return out.toString();
+}
+
 /// "Saved" toast used by every setting that saves on change.
 void showSaved(BuildContext context) {
   final m = ScaffoldMessenger.maybeOf(context);
@@ -313,6 +316,28 @@ void showSaved(BuildContext context) {
   m?.showSnackBar(
     const SnackBar(content: Text('Saved.'), duration: Duration(seconds: 2)),
   );
+}
+
+/// Label (muted) and value (regular) on one line.
+class _AboutRow extends StatelessWidget {
+  const _AboutRow(this.label, this.value);
+  final String label, value;
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 2),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 150,
+            child: Text(label, style: secondaryStyle(context)),
+          ),
+          Expanded(child: Text(value, style: theme.textTheme.bodyMedium)),
+        ],
+      ),
+    );
+  }
 }
 
 class _Key extends StatelessWidget {

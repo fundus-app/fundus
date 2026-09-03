@@ -926,6 +926,9 @@ class Health {
 
   /// Id of the data directory this Fundus serves.
   final String instance;
+
+  /// Whether POST /v1/transcribe is available (a dictation model is set).
+  final bool dictation;
   const Health({
     this.ok = false,
     this.version = '',
@@ -939,6 +942,7 @@ class Health {
     this.configuredTriage = '',
     this.configuredChat = '',
     this.instance = '',
+    this.dictation = false,
   });
   factory Health.fromJson(Map<String, dynamic> j) => Health(
     ok: _bool(j['ok']),
@@ -951,6 +955,7 @@ class Health {
     warnings: _strs(j['warnings']),
     setupNeeded: _bool(j['setup_needed']),
     instance: _str(j['instance']),
+    dictation: _bool(j['dictation']),
     configuredTriage: j['configured'] is Map
         ? _str((j['configured'] as Map)['triage'])
         : _str(j['triage']),
@@ -984,6 +989,9 @@ class ProviderInfo {
   final String keyHint;
   final bool local;
   final bool oauth;
+
+  /// audio | chat | none — how this provider can transcribe dictation.
+  final String transcription;
   const ProviderInfo({
     required this.name,
     this.type = 'openai',
@@ -992,6 +1000,7 @@ class ProviderInfo {
     this.keyHint = '',
     this.local = false,
     this.oauth = false,
+    this.transcription = 'none',
   });
   factory ProviderInfo.fromJson(String name, Map<String, dynamic> j) =>
       ProviderInfo(
@@ -1002,7 +1011,9 @@ class ProviderInfo {
         keyHint: _str(j['key_hint']),
         local: _bool(j['local']),
         oauth: _bool(j['oauth']),
+        transcription: _str(j['transcription'], 'none'),
       );
+  bool get canTranscribe => transcription == 'audio' || transcription == 'chat';
   bool get hasKey => keyStatus == 'set' || keyStatus == 'env';
   bool get needsKey => type == 'openai' && !local;
 }
@@ -1066,6 +1077,9 @@ class ServerSettings {
   final bool setupNeeded;
   final RoleRef triage;
   final RoleRef chat;
+
+  /// Dictation model; an empty model means dictation is off.
+  final RoleRef dictation;
   final Autonomy autonomy;
   final Map<String, ProviderInfo> providers;
   const ServerSettings({
@@ -1076,6 +1090,7 @@ class ServerSettings {
     this.setupNeeded = false,
     this.triage = const RoleRef(),
     this.chat = const RoleRef(),
+    this.dictation = const RoleRef(),
     this.autonomy = const Autonomy(),
     this.providers = const {},
   });
@@ -1096,6 +1111,7 @@ class ServerSettings {
       setupNeeded: _bool(j['setup_needed']),
       triage: RoleRef.fromJson(j['triage']),
       chat: RoleRef.fromJson(j['chat']),
+      dictation: RoleRef.fromJson(j['dictation']),
       autonomy: Autonomy.fromJson(j['autonomy']),
       providers: provs,
     );
@@ -1154,12 +1170,16 @@ class ModelList {
   final String suggestedTriage;
   final String suggestedChat;
 
+  /// Suggested dictation model; empty when the provider cannot transcribe.
+  final String suggestedTranscribe;
+
   /// Set when the provider could not be listed (e.g. Ollama not running).
   final String error;
   const ModelList({
     this.models = const [],
     this.suggestedTriage = '',
     this.suggestedChat = '',
+    this.suggestedTranscribe = '',
     this.error = '',
   });
   bool get ok => error.isEmpty;
@@ -1171,6 +1191,9 @@ class ModelList {
         : '',
     suggestedChat: j['suggested'] is Map
         ? _str((j['suggested'] as Map)['chat'])
+        : '',
+    suggestedTranscribe: j['suggested'] is Map
+        ? _str((j['suggested'] as Map)['transcribe'])
         : '',
   );
 }
@@ -1241,8 +1264,9 @@ String captureSourceLabel(String source) => switch (source) {
   _ => 'from $source',
 };
 
-/// Model name for display: the rules provider has no model.
+/// Model name for display: the rules provider has no model, and provider
+/// slugs never appear in the UI.
 String modelLabel(String provider, String model) {
   if (model == 'heuristic' || provider == 'fake') return 'rules';
-  return provider.isEmpty ? model : '$provider/$model';
+  return model;
 }

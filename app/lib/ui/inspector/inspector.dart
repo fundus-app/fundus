@@ -69,7 +69,7 @@ class Inspector extends StatelessWidget {
                 padding: const EdgeInsets.fromLTRB(20, 0, 20, 40),
                 child: Center(
                   child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 680),
+                    constraints: const BoxConstraints(maxWidth: 760),
                     child: body,
                   ),
                 ),
@@ -277,28 +277,47 @@ Future<void> _run(BuildContext context, Future<Receipt> Function() fn) async {
   }
 }
 
-/// Title row: editable title, then kind/meta chips including the id chip.
+/// Copies an object id for CLI use (`fundus get <id>`), with a toast.
+Future<void> copyId(BuildContext context, String id) async {
+  await Clipboard.setData(ClipboardData(text: id));
+  if (!context.mounted) return;
+  final m = ScaffoldMessenger.maybeOf(context);
+  m?.hideCurrentSnackBar();
+  m?.showSnackBar(
+    const SnackBar(content: Text('ID copied'), duration: Duration(seconds: 2)),
+  );
+}
+
+/// Title line (serif, ⋯ centred on it) and one quiet metadata row below:
+/// plain words separated by middle dots, topics as inline links.
 class _Header extends StatelessWidget {
   const _Header({
     required this.title,
     required this.onEdit,
     required this.menu,
-    required this.chips,
+    required this.facts,
     this.strike = false,
   });
   final String title;
   final VoidCallback onEdit;
-  final Widget menu;
-  final List<Widget> chips;
+  final Widget? menu;
+
+  /// Plain facts and links; joined with " · ".
+  final List<TextPart> facts;
   final bool strike;
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final parts = <TextPart>[];
+    for (var i = 0; i < facts.length; i++) {
+      if (i > 0 && !facts[i].glue) parts.add(const TextPart(' · '));
+      parts.add(facts[i]);
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             Expanded(
               child: EditableTitle(
@@ -309,19 +328,34 @@ class _Header extends StatelessWidget {
                 onEdit: onEdit,
               ),
             ),
-            menu,
+            ?menu,
           ],
         ),
-        const SizedBox(height: 6),
-        Wrap(
-          spacing: 8,
-          runSpacing: 6,
-          crossAxisAlignment: WrapCrossAlignment.center,
-          children: chips,
-        ),
+        if (parts.isNotEmpty) ...[
+          const SizedBox(height: 4),
+          LinkedText(parts: parts, style: secondaryStyle(context)),
+        ],
       ],
     );
   }
+}
+
+/// "in Fundus, Solar" as link parts for a header fact row.
+List<TextPart> _inTopics(List<LinkRef> topics, RefTap onOpen) {
+  if (topics.isEmpty) return const [];
+  final parts = <TextPart>[const TextPart('in ')];
+  for (var i = 0; i < topics.length; i++) {
+    if (i > 0) parts.add(const TextPart(', ', glue: true));
+    final t = topics[i];
+    parts.add(
+      TextPart(
+        t.title.isEmpty ? 'a topic' : t.title,
+        onTap: () => onOpen(t.id),
+        glue: true,
+      ),
+    );
+  }
+  return parts;
 }
 
 /// History section shared by all inspectors.
@@ -355,15 +389,18 @@ class _Origins extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (ids.isEmpty) return const SizedBox.shrink();
+    final labels = RefLabels.maybeOf(context);
+    labels?.request(ids);
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        SectionLabel(label),
-        Wrap(
-          spacing: 6,
-          runSpacing: 6,
-          children: [for (final id in ids) RefChip(id: id, onTap: onOpen)],
-        ),
+        SectionLabel(label, count: ids.length),
+        for (final id in ids)
+          ListRow(
+            icon: RefChip.iconFor(id),
+            title: labels?.labelFor(id) ?? RefChip.kindWord(id),
+            onTap: () => onOpen(id),
+          ),
       ],
     );
   }
@@ -377,17 +414,16 @@ class _Backlinks extends StatelessWidget {
   Widget build(BuildContext context) {
     if (links.isEmpty) return const SizedBox.shrink();
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const SectionLabel('Linked from'),
-        Wrap(
-          spacing: 6,
-          runSpacing: 6,
-          children: [
-            for (final l in links)
-              RefChip(id: l.id, label: l.title, onTap: onOpen),
-          ],
-        ),
+        SectionLabel('Linked from', count: links.length),
+        for (final l in links)
+          ListRow(
+            icon: RefChip.iconFor(l.id),
+            title: l.title.isEmpty ? RefChip.kindWord(l.id) : l.title,
+            secondary: RefChip.kindWord(l.id),
+            onTap: () => onOpen(l.id),
+          ),
       ],
     );
   }
@@ -496,6 +532,7 @@ class EditableDoc extends StatelessWidget {
     required this.onOpen,
     required this.apply,
     this.compact = false,
+    this.emptyText = 'No content yet — ',
   });
   final Doc doc;
   final RefTap onOpen;
@@ -504,13 +541,43 @@ class EditableDoc extends StatelessWidget {
   final Future<Receipt> Function(List<Map<String, dynamic>> edits) apply;
   final bool compact;
 
+  /// Shown before the inline "add one" link when the document is empty.
+  final String emptyText;
+
+  Future<void> _append(BuildContext context) async {
+    final md = await _promptText(
+      context,
+      title: doc.blocks.isEmpty ? 'Write' : 'Add to the end',
+      multiline: true,
+      hint: 'Markdown: paragraphs, - lists, > quotes, # headings',
+    );
+    if (md != null && md.trim().isNotEmpty && context.mounted) {
+      await _run(
+        context,
+        () => apply([
+          {'action': 'append', 'markdown': md.trim()},
+        ]),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (doc.blocks.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        child: LinkedText(
+          style: secondaryStyle(context),
+          parts: [
+            TextPart(emptyText),
+            TextPart('add one', onTap: () => _append(context)),
+          ],
+        ),
+      );
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (doc.blocks.isEmpty)
-          Text('No content yet.', style: Theme.of(context).textTheme.bodySmall),
         DocView(
           doc: doc,
           onRef: onOpen,
@@ -518,28 +585,11 @@ class EditableDoc extends StatelessWidget {
           blockDecorator: (ctx, b, child) =>
               _BlockShell(block: b, onOpen: onOpen, apply: apply, child: child),
         ),
-        const SizedBox(height: 8),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: TextButton.icon(
-            icon: const Icon(Icons.add_rounded, size: 16),
-            label: const Text('Add paragraph'),
-            onPressed: () async {
-              final md = await _promptText(
-                context,
-                title: 'Add to the end',
-                multiline: true,
-                hint: 'Markdown: paragraphs, - lists, > quotes, # headings',
-              );
-              if (md != null && md.trim().isNotEmpty && context.mounted) {
-                await _run(
-                  context,
-                  () => apply([
-                    {'action': 'append', 'markdown': md.trim()},
-                  ]),
-                );
-              }
-            },
+        Padding(
+          padding: const EdgeInsets.only(top: 10),
+          child: LinkedText(
+            style: secondaryStyle(context),
+            parts: [TextPart('add paragraph', onTap: () => _append(context))],
           ),
         ),
       ],
@@ -574,7 +624,9 @@ class _BlockShellState extends State<_BlockShell> {
       initial: b.toMarkdown(),
       multiline: true,
     );
-    if (md == null || md.trim().isEmpty || md.trim() == b.toMarkdown()) return;
+    if (md == null || md.trim().isEmpty || sameMarkdown(md, b.toMarkdown())) {
+      return;
+    }
     if (!mounted) return;
     await _run(
       context,
@@ -765,6 +817,8 @@ class _NoteInspectorState extends State<NoteInspector> {
           context,
           () => state.archive(n.id, n.meta.rev, unarchive: true),
         );
+      case 'copy_id':
+        await copyId(context, n.id);
     }
   }
 
@@ -772,8 +826,6 @@ class _NoteInspectorState extends State<NoteInspector> {
   Widget build(BuildContext context) {
     final n = widget.detail.note!;
     final state = context.read<AppState>();
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -802,34 +854,15 @@ class _NoteInspectorState extends State<NoteInspector> {
                   value: 'unarchive',
                   child: Text('Unarchive'),
                 ),
+              const PopupMenuDivider(),
+              const PopupMenuItem(value: 'copy_id', child: Text('Copy ID')),
             ],
           ),
-          chips: [
-            Chip(
-              avatar: Icon(
-                n.kind == 'idea'
-                    ? Icons.lightbulb_outline_rounded
-                    : Icons.notes_rounded,
-                size: 14,
-              ),
-              label: Text(n.kind),
-            ),
-            if (n.meta.archived)
-              Chip(
-                label: const Text('archived'),
-                backgroundColor: scheme.errorContainer,
-              ),
-            Text(
-              'updated ${timeAgo(n.meta.updatedAt)}',
-              style: theme.textTheme.labelSmall,
-            ),
-            IdChip(n.id, rev: n.meta.rev),
-            TopicChips(
-              ids: widget.detail.topics.map((t) => t.id).toList(),
-              names: widget.detail.topics.map((t) => t.title).toList(),
-              onTap: widget.onOpen,
-              dense: false,
-            ),
+          facts: [
+            TextPart(n.kind == 'idea' ? 'Idea' : 'Note'),
+            if (n.meta.archived) const TextPart('archived'),
+            TextPart(timeAgo(n.meta.updatedAt)),
+            ..._inTopics(widget.detail.topics, widget.onOpen),
           ],
         ),
         const SizedBox(height: 18),
@@ -838,7 +871,7 @@ class _NoteInspectorState extends State<NoteInspector> {
             initial: n.body.toMarkdown(),
             onCancel: () => setState(() => _editing = false),
             onSave: (md) async {
-              if (md.trim() == n.body.toMarkdown().trim()) {
+              if (sameMarkdown(md, n.body.toMarkdown())) {
                 setState(() => _editing = false);
                 return;
               }
@@ -918,7 +951,6 @@ class TaskInspector extends StatelessWidget {
     final t = detail.task!;
     final state = context.read<AppState>();
     final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -926,17 +958,26 @@ class TaskInspector extends StatelessWidget {
           title: t.text,
           strike: t.state == 'done',
           onEdit: () => _editText(context, state, t),
-          menu: const SizedBox(width: 8),
-          chips: [
-            Chip(
-              avatar: const Icon(Icons.check_circle_outline_rounded, size: 14),
-              label: Text(t.state),
-            ),
-            Text(
-              'created ${timeAgo(t.meta.createdAt)}',
-              style: theme.textTheme.labelSmall,
-            ),
-            IdChip(t.id, rev: t.meta.rev),
+          menu: PopupMenuButton<String>(
+            tooltip: 'Task actions',
+            icon: const Icon(Icons.more_horiz_rounded),
+            onSelected: (v) {
+              if (v == 'copy_id') copyId(context, t.id);
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(value: 'copy_id', child: Text('Copy ID')),
+            ],
+          ),
+          facts: [
+            TextPart(switch (t.state) {
+              'waiting' => 'Waiting',
+              'later' => 'Deferred',
+              'done' => 'Done',
+              _ => 'Open',
+            }),
+            if (t.due.isNotEmpty) TextPart('due ${dueLabel(t.due)}'),
+            if (t.due.isEmpty) TextPart('created ${timeAgo(t.meta.createdAt)}'),
+            ..._inTopics(detail.topics, onOpen),
           ],
         ),
         const SizedBox(height: 14),
@@ -951,7 +992,14 @@ class TaskInspector extends StatelessWidget {
           showSelectedIcon: false,
           style: ButtonStyle(
             visualDensity: VisualDensity.compact,
-            textStyle: WidgetStatePropertyAll(theme.textTheme.labelMedium),
+            minimumSize: const WidgetStatePropertyAll(Size(0, 36)),
+            fixedSize: const WidgetStatePropertyAll(Size.fromHeight(36)),
+            textStyle: WidgetStatePropertyAll(
+              theme.textTheme.labelMedium!.copyWith(fontSize: 13),
+            ),
+            padding: const WidgetStatePropertyAll(
+              EdgeInsets.symmetric(horizontal: 12),
+            ),
           ),
           onSelectionChanged: (s) =>
               _run(context, () => state.setTaskState(t, s.first)),
@@ -961,56 +1009,57 @@ class TaskInspector extends StatelessWidget {
           spacing: 8,
           runSpacing: 8,
           children: [
-            ActionChip(
-              avatar: const Icon(Icons.event_rounded, size: 14),
-              label: Text(t.due.isEmpty ? 'Due…' : dueLabel(t.due)),
-              onPressed: () => _pickDue(context, state, t),
+            DetailChip(
+              icon: Icons.event_rounded,
+              label: t.due.isEmpty ? 'Add due date' : 'Due ${dueLabel(t.due)}',
+              ghost: t.due.isEmpty,
+              onTap: () => _pickDue(context, state, t),
+              onClear: t.due.isEmpty
+                  ? null
+                  : () => _run(context, () => state.updateTask(t, {'due': ''})),
             ),
-            if (t.due.isNotEmpty)
-              ActionChip(
-                avatar: const Icon(Icons.close_rounded, size: 14),
-                label: const Text('Clear date'),
-                onPressed: () =>
-                    _run(context, () => state.updateTask(t, {'due': ''})),
-              ),
-            ActionChip(
-              avatar: const Icon(Icons.timer_outlined, size: 14),
-              label: Text(
-                t.effortMinutes > 0 ? '${t.effortMinutes} min' : 'Effort…',
-              ),
-              onPressed: () => _editEffort(context, state, t),
+            DetailChip(
+              icon: Icons.timer_outlined,
+              label: t.effortMinutes > 0
+                  ? '${t.effortMinutes} min'
+                  : 'Add effort',
+              ghost: t.effortMinutes == 0,
+              onTap: () => _editEffort(context, state, t),
+              onClear: t.effortMinutes == 0
+                  ? null
+                  : () => _run(
+                      context,
+                      () => state.updateTask(t, {'effort_minutes': 0}),
+                    ),
             ),
             PopupMenuButton<int>(
               tooltip: 'Importance',
               onSelected: (v) =>
                   _run(context, () => state.updateTask(t, {'importance': v})),
               itemBuilder: (_) => const [
-                PopupMenuItem(value: 0, child: Text('Unset')),
-                PopupMenuItem(value: 1, child: Text('Low')),
-                PopupMenuItem(value: 2, child: Text('Normal')),
-                PopupMenuItem(value: 3, child: Text('High')),
+                PopupMenuItem(value: 1, child: Text('Low importance')),
+                PopupMenuItem(value: 2, child: Text('Normal importance')),
+                PopupMenuItem(value: 3, child: Text('High importance')),
               ],
-              child: Chip(
-                avatar: Icon(
-                  Icons.priority_high_rounded,
-                  size: 14,
-                  color: t.importance == 3 ? scheme.primary : null,
-                ),
-                label: Text(
-                  const ['Importance…', 'Low', 'Normal', 'High'][t.importance
-                      .clamp(0, 3)],
-                ),
+              child: DetailChip(
+                icon: Icons.priority_high_rounded,
+                label: switch (t.importance) {
+                  3 => 'High importance',
+                  1 => 'Low importance',
+                  _ => 'Normal importance',
+                },
+                ghost: t.importance != 3,
+                filled: t.importance == 3,
               ),
             ),
             if (t.state == 'waiting' || t.waitingOn.isNotEmpty)
-              ActionChip(
-                avatar: const Icon(Icons.hourglass_empty_rounded, size: 14),
-                label: Text(
-                  t.waitingOn.isEmpty
-                      ? 'Waiting on…'
-                      : 'Waiting on ${t.waitingOn}',
-                ),
-                onPressed: () => _editWaiting(context, state, t),
+              DetailChip(
+                icon: Icons.hourglass_empty_rounded,
+                label: t.waitingOn.isEmpty
+                    ? 'Waiting on…'
+                    : 'Waiting on ${t.waitingOn}',
+                ghost: t.waitingOn.isEmpty,
+                onTap: () => _editWaiting(context, state, t),
               ),
           ],
         ),
@@ -1022,15 +1071,6 @@ class TaskInspector extends StatelessWidget {
               '${t.reasons.join(' · ')}.',
               style: theme.textTheme.bodySmall,
             ),
-          ),
-        ],
-        if (detail.topics.isNotEmpty) ...[
-          const SectionLabel('Topics'),
-          TopicChips(
-            ids: detail.topics.map((x) => x.id).toList(),
-            names: detail.topics.map((x) => x.title).toList(),
-            onTap: onOpen,
-            dense: false,
           ),
         ],
         if (t.notes.isNotEmpty)
@@ -1117,6 +1157,8 @@ class _TopicInspectorState extends State<TopicInspector> {
         if (ok && mounted) {
           await _run(context, () => state.archive(t.id, t.meta.rev));
         }
+      case 'copy_id':
+        await copyId(context, t.id);
     }
   }
 
@@ -1125,7 +1167,6 @@ class _TopicInspectorState extends State<TopicInspector> {
     final t = widget.detail.topic!;
     final page = widget.page;
     final state = context.read<AppState>();
-    final theme = Theme.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -1162,19 +1203,26 @@ class _TopicInspectorState extends State<TopicInspector> {
                   child: Text('Mark as project'),
                 ),
               const PopupMenuItem(value: 'archive', child: Text('Archive')),
+              const PopupMenuDivider(),
+              const PopupMenuItem(value: 'copy_id', child: Text('Copy ID')),
             ],
           ),
-          chips: [
-            Chip(
-              avatar: const Icon(Icons.tag_rounded, size: 14),
-              label: Text(t.kind),
-            ),
-            if (t.aliases.isNotEmpty)
-              Text(
-                'aka ${t.aliases.join(', ')}',
-                style: theme.textTheme.labelSmall,
+          facts: [
+            TextPart(switch (t.kind) {
+              'person' => 'Person',
+              'project' => 'Project',
+              _ => 'Topic',
+            }),
+            if (t.aliases.isNotEmpty) TextPart('also ${t.aliases.join(', ')}'),
+            TextPart('created ${timeAgo(t.meta.createdAt)}'),
+            if (page != null)
+              TextPart(
+                '${page.notes.length} note${page.notes.length == 1 ? '' : 's'}',
               ),
-            IdChip(t.id, rev: t.meta.rev),
+            if (page != null)
+              TextPart(
+                '${page.tasks.length} task${page.tasks.length == 1 ? '' : 's'}',
+              ),
           ],
         ),
         const SectionLabel('Summary'),
@@ -1183,7 +1231,7 @@ class _TopicInspectorState extends State<TopicInspector> {
             initial: t.summary.toMarkdown(),
             onCancel: () => setState(() => _editing = false),
             onSave: (md) async {
-              if (md.trim() == t.summary.toMarkdown().trim()) {
+              if (sameMarkdown(md, t.summary.toMarkdown())) {
                 setState(() => _editing = false);
                 return;
               }
@@ -1196,68 +1244,39 @@ class _TopicInspectorState extends State<TopicInspector> {
             doc: t.summary,
             onOpen: widget.onOpen,
             compact: true,
+            emptyText: 'No summary yet — ',
             apply: (edits) => state.updateTopic(t, {'edits': edits}),
           ),
-        if (page != null && page.notes.isNotEmpty) ...[
-          SectionLabel(
-            'Notes',
-            trailing: Text('${page.notes.length}', style: monoStyle(context)),
-          ),
+        if (page != null) ...[
+          SectionLabel('Notes', count: page.notes.length),
+          if (page.notes.isEmpty) const EmptyLine('Nothing here yet.'),
           for (final n in page.notes)
-            ListTile(
-              contentPadding: const EdgeInsets.symmetric(horizontal: 4),
-              leading: Icon(
-                n.kind == 'idea'
-                    ? Icons.lightbulb_outline_rounded
-                    : Icons.notes_rounded,
-                size: 18,
-              ),
-              title: Text(n.title, style: theme.textTheme.bodyMedium),
-              subtitle:
-                  n.preview.isEmpty ||
-                      n.preview.trim().startsWith(n.title.trim())
-                  ? null
-                  : Text(
-                      n.preview,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodySmall,
-                    ),
+            ListRow(
+              icon: n.kind == 'idea'
+                  ? Icons.lightbulb_outline_rounded
+                  : Icons.notes_rounded,
+              title: n.title,
+              secondary:
+                  remainderAfterTitle(n.title, n.preview) ??
+                  timeAgo(n.meta.updatedAt),
               onTap: () => widget.onOpen(n.id),
             ),
-        ],
-        if (page != null && page.tasks.isNotEmpty) ...[
-          SectionLabel(
-            'Tasks',
-            trailing: Text('${page.tasks.length}', style: monoStyle(context)),
-          ),
+          SectionLabel('Tasks', count: page.tasks.length),
+          if (page.tasks.isEmpty) const EmptyLine('Nothing here yet.'),
           for (final task in page.tasks)
-            ListTile(
-              contentPadding: const EdgeInsets.symmetric(horizontal: 4),
-              leading: Icon(
-                task.state == 'done'
-                    ? Icons.check_circle_rounded
-                    : Icons.circle_outlined,
-                size: 18,
-                color: task.state == 'done'
-                    ? theme.colorScheme.success
-                    : theme.colorScheme.outline,
-              ),
-              title: Text(
-                task.text,
-                style: theme.textTheme.bodyMedium!.copyWith(
-                  decoration: task.state == 'done'
-                      ? TextDecoration.lineThrough
-                      : null,
-                ),
-              ),
-              subtitle: Text(
-                [
-                  task.state,
-                  if (task.due.isNotEmpty) dueLabel(task.due),
-                ].join(' · '),
-                style: theme.textTheme.labelSmall,
-              ),
+            ListRow(
+              leading: _TaskCheck(task: task),
+              title: task.text,
+              strike: task.state == 'done',
+              secondary: task.due.isEmpty ? null : 'due ${dueLabel(task.due)}',
+              trailing: task.state == 'open'
+                  ? null
+                  : Text(switch (task.state) {
+                      'waiting' => 'waiting',
+                      'later' => 'deferred',
+                      'done' => 'done',
+                      _ => task.state,
+                    }, style: secondaryStyle(context)),
               onTap: () => widget.onOpen(task.id),
             ),
         ],
@@ -1456,7 +1475,6 @@ class _CaptureInspectorState extends State<CaptureInspector> {
               '${captureSourceLabel(c.source)}  ·  ${shortDate(c.meta.createdAt)} ${shortTime(c.meta.createdAt)}',
               style: theme.textTheme.labelSmall,
             ),
-            IdChip(c.id, rev: c.meta.rev),
           ],
         ),
         const SizedBox(height: 14),
@@ -1553,7 +1571,6 @@ class _ConversationInspector extends StatelessWidget {
           style: Theme.of(context).textTheme.labelSmall,
         ),
         const SizedBox(height: 8),
-        IdChip(c.id, rev: c.meta.rev),
       ],
     );
   }
@@ -1585,7 +1602,7 @@ class _ResultView extends StatelessWidget {
               Text('$pct% sure', style: theme.textTheme.labelSmall),
             if (r.model.isNotEmpty || r.provider.isNotEmpty)
               Text(
-                modelLabel(r.provider, r.model),
+                'by ${modelLabel(r.provider, r.model)}',
                 style: theme.textTheme.labelSmall,
               ),
           ],
@@ -1679,6 +1696,119 @@ class _ResultView extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: children,
+    );
+  }
+}
+
+/// The round task checkbox: tapping toggles done.
+class _TaskCheck extends StatelessWidget {
+  const _TaskCheck({required this.task});
+  final Task task;
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final state = context.read<AppState>();
+    final done = task.state == 'done';
+    return Semantics(
+      label: done ? 'Reopen task' : 'Complete task',
+      button: true,
+      child: InkWell(
+        onTap: () => _run(
+          context,
+          () => state.setTaskState(task, done ? 'open' : 'done'),
+        ),
+        borderRadius: BorderRadius.circular(12),
+        child: Icon(
+          done ? Icons.check_circle_rounded : Icons.circle_outlined,
+          size: 18,
+          color: done ? scheme.success : scheme.outline,
+        ),
+      ),
+    );
+  }
+}
+
+/// A quiet detail chip: ghost (outlined, muted) when unset, plain when set,
+/// filled for an emphasised value; a small × to clear appears on hover.
+class DetailChip extends StatefulWidget {
+  const DetailChip({
+    super.key,
+    required this.icon,
+    required this.label,
+    this.ghost = false,
+    this.filled = false,
+    this.onTap,
+    this.onClear,
+  });
+  final IconData icon;
+  final String label;
+  final bool ghost;
+  final bool filled;
+  final VoidCallback? onTap;
+  final VoidCallback? onClear;
+  @override
+  State<DetailChip> createState() => _DetailChipState();
+}
+
+class _DetailChipState extends State<DetailChip> {
+  bool _hover = false;
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final fg = widget.filled
+        ? scheme.onPrimaryContainer
+        : widget.ghost
+        ? scheme.onSurfaceVariant
+        : scheme.onSurface;
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: Material(
+        color: widget.filled
+            ? scheme.primaryContainer
+            : (widget.ghost ? Colors.transparent : scheme.surfaceContainer),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(8),
+          side: BorderSide(
+            color: widget.ghost ? scheme.outlineVariant : Colors.transparent,
+          ),
+        ),
+        child: InkWell(
+          onTap: widget.onTap,
+          borderRadius: BorderRadius.circular(8),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(10, 6, 8, 6),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(widget.icon, size: 14, color: fg),
+                const SizedBox(width: 6),
+                Text(
+                  widget.label,
+                  style: theme.textTheme.labelMedium!.copyWith(color: fg),
+                ),
+                if (widget.onClear != null)
+                  AnimatedOpacity(
+                    opacity: _hover ? 1 : 0,
+                    duration: const Duration(milliseconds: 120),
+                    child: Padding(
+                      padding: const EdgeInsets.only(left: 4),
+                      child: InkWell(
+                        onTap: widget.onClear,
+                        borderRadius: BorderRadius.circular(8),
+                        child: Tooltip(
+                          message: 'Clear',
+                          child: Icon(Icons.close_rounded, size: 14, color: fg),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

@@ -6,6 +6,20 @@
 // On failure the test prints the step that failed, the daemon log tail, the
 // daemon's /v1/health and /v1/inbox, and a trimmed widget tree, and writes
 // the same (plus a screenshot when the platform supports it) to build/e2e/.
+//
+// The second test dictates through the real `record` plugin (Linux:
+// parecord → ffmpeg) against a daemon that has a dictation model. It skips
+// itself unless FUNDUS_DICTATION_URL is set. Nobody has to talk: play a spoken
+// file into a null sink and record from its monitor.
+//   pactl load-module module-null-sink sink_name=fundus_dict
+//   espeak-ng -w /tmp/speech.wav "Call the dentist tomorrow at nine."
+//   PULSE_SOURCE=fundus_dict.monitor PULSE_SINK=fundus_dict \
+//   FUNDUS_DICTATION_URL=http://127.0.0.1:47311 \
+//   FUNDUS_DICTATION_WAV=/tmp/speech.wav \
+//   FUNDUS_BIN=../bin/fundus flutter test integration_test -d linux
+//
+// Both tests live in one file on purpose: on desktop the runner cannot start
+// a second app process for a second file ("log reader stopped").
 import 'dart:convert';
 import 'dart:io';
 
@@ -30,6 +44,8 @@ late String _url;
 late IOSink _daemonLog;
 final _daemonLogFile = File('build/e2e/daemon.log');
 String _step = 'start';
+final _dictationUrl = Platform.environment['FUNDUS_DICTATION_URL'] ?? '';
+final _dictationWav = Platform.environment['FUNDUS_DICTATION_WAV'] ?? '';
 
 Future<int> _freePort() async {
   final s = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
@@ -374,6 +390,62 @@ void main() {
         await _diagnose(tester, e);
         rethrow;
       }
+    },
+  );
+  testWidgets(
+    'dictation: mic → speech → transcript lands in the capture field',
+    (tester) async {
+      if (_dictationUrl.isEmpty) {
+        markTestSkipped(
+          'set FUNDUS_DICTATION_URL to a daemon with a dictation model',
+        );
+        return;
+      }
+      _step = 'dictation';
+      await tester.pumpWidget(
+        FundusApp(settings: Settings.memory(serverUrl: _dictationUrl)),
+      );
+      await _ensureWindowSize(tester);
+
+      final field = find.byKey(const Key('capture-field'));
+      await pumpUntil(tester, field);
+      await tester.enterText(field, 'Also');
+      await pumpUntil(tester, find.byKey(const Key('mic-start')));
+      await tester.tap(find.byKey(const Key('mic-start')));
+      await pumpUntil(
+        tester,
+        find.byKey(const Key('mic-stop')),
+        timeout: const Duration(seconds: 10),
+      );
+
+      if (_dictationWav.isNotEmpty) {
+        // paplay honours PULSE_SINK; parecord in the app honours PULSE_SOURCE.
+        final play = await Process.run('paplay', [_dictationWav]);
+        expect(play.exitCode, 0, reason: 'paplay failed: ${play.stderr}');
+      } else {
+        await tester.pump(const Duration(seconds: 4));
+      }
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.tap(find.byKey(const Key('mic-stop')));
+
+      var text = '';
+      final end = DateTime.now().add(const Duration(seconds: 60));
+      while (DateTime.now().isBefore(end)) {
+        await tester.pump(const Duration(milliseconds: 250));
+        text = tester.widget<TextField>(field).controller!.text;
+        if (text.length > 'Also'.length &&
+            find.byKey(const Key('mic-start')).evaluate().isNotEmpty) {
+          break;
+        }
+      }
+      // ignore: avoid_print
+      print('[dictation] field text: "$text"');
+      _outDir.createSync(recursive: true);
+      File('${_outDir.path}/dictation.txt').writeAsStringSync(text);
+      expect(text, startsWith('Also '), reason: 'transcript follows a space');
+      expect(text.length, greaterThan(10), reason: 'transcript missing');
+      // Nothing was captured on its own: no receipt pill appeared.
+      expect(find.textContaining('Filed'), findsNothing);
     },
   );
 }

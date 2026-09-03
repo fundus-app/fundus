@@ -65,3 +65,59 @@ func TestIsLoopbackListen(t *testing.T) {
 		}
 	}
 }
+
+func TestDictationDefaultsAndTOML(t *testing.T) {
+	cfg := Default()
+	if cfg.Triage.Model != "gpt-5.6-luna" || cfg.Chat.Model != "gpt-5.6-terra" || cfg.Dictation.Model == "" {
+		t.Fatalf("defaults %+v %+v %+v", cfg.Triage, cfg.Chat, cfg.Dictation)
+	}
+	if cfg.DictationAvailable() {
+		t.Fatal("no key, so dictation must be unavailable")
+	}
+	for name, want := range map[string]string{"openai": "audio", "gemini": "chat", "openrouter": "chat", "anthropic": "none", "ollama": "none", "fake": "none"} {
+		if got := cfg.Providers[name].TranscriptionMode(); got != want {
+			t.Errorf("%s transcription %q, want %q", name, got, want)
+		}
+	}
+	if (Provider{Type: "openai"}).TranscriptionMode() != "audio" {
+		t.Error("custom OpenAI-compatible providers default to the audio endpoint")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	body := "data_dir = \"" + dir + "\"\n[triage]\nprovider = \"openai\"\nmodel = \"x\"\n[chat]\nprovider = \"openai\"\nmodel = \"y\"\n[dictation]\nprovider = \"gemini\"\nmodel = \"gemini-3.8-flash\"\n[providers.openai]\ntype = \"openai\"\nbase_url = \"https://api.openai.com/v1\"\n[providers.gemini]\ntype = \"openai\"\nbase_url = \"https://generativelanguage.googleapis.com/v1beta/openai\"\napi_key = \"g\"\ntranscription = \"chat\"\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Dictation.Provider != "gemini" || !loaded.DictationAvailable() {
+		t.Fatalf("loaded dictation %+v available=%v", loaded.Dictation, loaded.DictationAvailable())
+	}
+}
+
+func TestOlderFilesAndRemoteOllama(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	body := "data_dir = \"" + dir + "\"\n[triage]\nprovider = \"ollama\"\nmodel = \"qwen3:8b\"\n[chat]\nprovider = \"ollama\"\nmodel = \"qwen3:8b\"\n[providers.ollama]\ntype = \"openai\"\nbase_url = \"http://lan-box:11434/v1\"\n[providers.anthropic]\ntype = \"openai\"\nbase_url = \"https://api.anthropic.com/v1\"\napi_key_env = \"ANTHROPIC_API_KEY\"\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Providers["ollama"].TranscriptionMode() != "none" || cfg.Providers["anthropic"].TranscriptionMode() != "none" {
+		t.Fatalf("old file transcription: %+v", cfg.Providers)
+	}
+	if !cfg.Providers["ollama"].Usable() || cfg.SetupNeeded() {
+		t.Fatal("a keyless Ollama on another machine must be usable")
+	}
+	if cfg.Providers["anthropic"].Usable() {
+		t.Fatal("anthropic without a key must not be usable")
+	}
+	if cfg.DictationAvailable() {
+		t.Fatal("dictation must stay off with Ollama")
+	}
+}

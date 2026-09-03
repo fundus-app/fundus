@@ -76,6 +76,22 @@ type Provider interface {
 	Complete(ctx context.Context, req *Request) (*Response, error)
 }
 
+// TranscribeRequest carries one recording to turn into text.
+type TranscribeRequest struct {
+	Model    string
+	Audio    []byte
+	MIME     string // audio/wav, audio/mpeg, audio/webm …
+	Language string // BCP-47 hint, optional
+	// Hints are words the speaker is likely to use (topic names, product
+	// names) so that proper nouns come out right.
+	Hints []string
+}
+
+// Transcriber is implemented by providers that can turn speech into text.
+type Transcriber interface {
+	Transcribe(ctx context.Context, req *TranscribeRequest) (string, error)
+}
+
 // Error classifies provider failures so callers can decide about retries.
 type Error struct {
 	Provider  string

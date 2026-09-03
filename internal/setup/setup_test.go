@@ -167,3 +167,63 @@ func TestApplyRules(t *testing.T) {
 		t.Fatalf("provider switch with model: %v", err)
 	}
 }
+
+func TestSuggestCurrentFamilies(t *testing.T) {
+	models := []string{"gpt-4.1", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-4o-mini-transcribe", "gpt-transcribe", "whisper-1"}
+	s := Suggest("openai", models)
+	if s.Triage != "gpt-5.6-luna" || s.Chat != "gpt-5.6-terra" || s.Transcribe != "gpt-transcribe" {
+		t.Fatalf("openai %+v", s)
+	}
+	// A future generation is found by version without a code change.
+	s = Suggest("openai", []string{"gpt-5.7-luna", "gpt-5.7-terra", "gpt-5.7-sol", "gpt-5.7-2027-01-01", "gpt-5.7-codex", "gpt-4o-mini-transcribe"})
+	if s.Triage != "gpt-5.7-luna" || s.Chat != "gpt-5.7-terra" || s.Transcribe != "gpt-4o-mini-transcribe" {
+		t.Fatalf("future openai %+v", s)
+	}
+	if got := newestGPT([]string{"gpt-6", "gpt-5.9-terra", "gpt-6-terra"}, "terra", ""); got != "gpt-6-terra" {
+		t.Fatalf("newestGPT %q", got)
+	}
+	s = Suggest("gemini", []string{"gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.1-pro-preview"})
+	if s.Triage != "gemini-3.5-flash-lite" || s.Chat != "gemini-3.8-flash" || s.Transcribe != "gemini-3.8-flash" {
+		t.Fatalf("gemini %+v", s)
+	}
+	if s := Suggest("anthropic", []string{"claude-sonnet-5"}); s.Transcribe != "" {
+		t.Fatalf("anthropic cannot hear: %+v", s)
+	}
+}
+
+func TestApplyDictationAndOllamaAddress(t *testing.T) {
+	cfg := config.Default()
+	cfg.Providers["openai"] = config.Provider{Type: "openai", BaseURL: "https://api.openai.com/v1", APIKey: "sk-1", Transcription: "audio"}
+	if !cfg.DictationAvailable() {
+		t.Fatal("default openai setup should allow dictation")
+	}
+	// Ollama on another machine: no key anywhere, so the address may change freely.
+	remote := "http://lan-box:11434/v1"
+	next, err := Apply(cfg, Patch{Providers: map[string]ProviderPatch{"ollama": {BaseURL: &remote}}})
+	if err != nil || next.Providers["ollama"].BaseURL != remote {
+		t.Fatalf("remote ollama: %v %+v", err, next.Providers["ollama"])
+	}
+	// Switching the filing provider takes dictation along and clears its model.
+	next, err = Apply(cfg, Patch{Triage: &RoleView{Provider: "ollama", Model: "qwen3:8b"}, Chat: &RoleView{Provider: "ollama", Model: "qwen3:8b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Dictation.Provider != "ollama" || next.Dictation.Model != "" || next.DictationAvailable() {
+		t.Fatalf("dictation after provider switch: %+v", next.Dictation)
+	}
+	v := BuildView(next)
+	if v.Dictation.Provider != "ollama" || v.Providers["ollama"].Transcription != "none" || v.Providers["openai"].Transcription != "audio" || v.Providers["gemini"].Transcription != "chat" {
+		t.Fatalf("view %+v %+v", v.Dictation, v.Providers["ollama"])
+	}
+	// An explicit dictation role keeps working on its own provider.
+	next, err = Apply(next, Patch{Dictation: &RoleView{Provider: "openai", Model: "gpt-transcribe"}})
+	if err != nil || !next.DictationAvailable() || next.Dictation.Model != "gpt-transcribe" {
+		t.Fatalf("explicit dictation: %v %+v", err, next.Dictation)
+	}
+	empty := ""
+	_ = empty
+	next, err = Apply(next, Patch{Dictation: &RoleView{Provider: "openai", Model: ""}})
+	if err != nil || next.DictationAvailable() {
+		t.Fatalf("switching dictation off: %v %+v", err, next.Dictation)
+	}
+}

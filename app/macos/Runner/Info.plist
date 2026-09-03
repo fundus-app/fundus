@@ -28,5 +28,7 @@
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Fundus records your voice only while you dictate a capture; the recording is sent to your configured model for transcription.</string>
 </dict>
 </plist>

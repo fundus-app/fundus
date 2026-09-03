@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +32,8 @@ type ProviderView struct {
 	Local     bool   `json:"local"`
 	OAuth     bool   `json:"oauth"`
 	Usable    bool   `json:"usable"`
+	// Transcription is audio | chat | none: whether dictation works here.
+	Transcription string `json:"transcription"`
 }
 
 // View is the settings document returned to clients.
@@ -42,6 +45,7 @@ type View struct {
 	SetupNeeded bool                    `json:"setup_needed"`
 	Triage      RoleView                `json:"triage"`
 	Chat        RoleView                `json:"chat"`
+	Dictation   RoleView                `json:"dictation"`
 	Autonomy    config.Policy           `json:"autonomy"`
 	Providers   map[string]ProviderView `json:"providers"`
 }
@@ -56,6 +60,7 @@ type RoleView struct {
 type Patch struct {
 	Triage    *RoleView                `json:"triage,omitempty"`
 	Chat      *RoleView                `json:"chat,omitempty"`
+	Dictation *RoleView                `json:"dictation,omitempty"`
 	Timezone  *string                  `json:"timezone,omitempty"`
 	Token     *string                  `json:"token,omitempty"`
 	Autonomy  *PolicyPatch             `json:"autonomy,omitempty"`
@@ -84,12 +89,14 @@ var OAuthProviders = map[string]bool{"openrouter": true}
 func BuildView(cfg *config.Config) View {
 	v := View{Path: cfg.Path, Listen: cfg.Listen, Timezone: cfg.Timezone, TokenSet: cfg.Token != "", SetupNeeded: cfg.SetupNeeded(),
 		Triage: RoleView{cfg.Triage.Provider, cfg.Triage.Model}, Chat: RoleView{cfg.Chat.Provider, cfg.Chat.Model},
-		Autonomy: cfg.Autonomy, Providers: map[string]ProviderView{}}
+		Dictation: RoleView{cfg.Dictation.Provider, cfg.Dictation.Model},
+		Autonomy:  cfg.Autonomy, Providers: map[string]ProviderView{}}
 	if v.Timezone == "" {
 		v.Timezone = time.Local.String()
 	}
 	for name, p := range cfg.Providers {
-		pv := ProviderView{Type: p.Type, BaseURL: p.BaseURL, APIKeyEnv: p.APIKeyEnv, Local: p.Local(), OAuth: OAuthProviders[name], Usable: p.Usable()}
+		pv := ProviderView{Type: p.Type, BaseURL: p.BaseURL, APIKeyEnv: p.APIKeyEnv, Local: p.Local(), OAuth: OAuthProviders[name], Usable: p.Usable(),
+			Transcription: p.TranscriptionMode()}
 		switch {
 		case p.Type == "fake":
 			pv.KeyStatus = "none"
@@ -153,7 +160,7 @@ func Apply(cfg *config.Config, p Patch) (*config.Config, error) {
 			if pp.Type == "" {
 				pp.Type = "openai"
 			}
-			prov = config.Provider{Type: pp.Type}
+			prov = config.Provider{Type: pp.Type, Transcription: config.PresetTranscription(name)}
 		}
 		if pp.BaseURL != nil {
 			u := strings.TrimSpace(*pp.BaseURL)
@@ -166,8 +173,10 @@ func Apply(cfg *config.Config, p Patch) (*config.Config, error) {
 			u = strings.TrimRight(u, "/")
 			if !sameHost(prov.BaseURL, u) {
 				// A key must never follow the endpoint to a new host: the
-				// caller has to supply the key for the new endpoint.
-				if pp.APIKey == nil {
+				// caller has to supply the key for the new endpoint. A
+				// provider without any key (Ollama on another machine) has
+				// nothing to protect.
+				if pp.APIKey == nil && (prov.ResolveAPIKey() != "" || prov.APIKeyEnv != "") {
 					return nil, fmt.Errorf("providers.%s: changing base_url requires api_key in the same request", name)
 				}
 				prov.APIKeyEnv = ""
@@ -184,12 +193,24 @@ func Apply(cfg *config.Config, p Patch) (*config.Config, error) {
 	}
 	if p.Triage != nil {
 		if p.Triage.Provider != "" && p.Triage.Provider != next.Triage.Provider {
+			// Dictation follows the filing provider unless set on its own.
+			if p.Dictation == nil && next.Dictation.Provider == next.Triage.Provider {
+				next.Dictation.Provider = strings.ToLower(strings.TrimSpace(p.Triage.Provider))
+				next.Dictation.Model = ""
+			}
 			next.Triage.Provider = strings.ToLower(strings.TrimSpace(p.Triage.Provider))
 			next.Triage.Model = "" // a model belongs to a provider; require a new one
 		}
 		if p.Triage.Model != "" {
 			next.Triage.Model = p.Triage.Model
 		}
+	}
+	if p.Dictation != nil {
+		if p.Dictation.Provider != "" && p.Dictation.Provider != next.Dictation.Provider {
+			next.Dictation.Provider = strings.ToLower(strings.TrimSpace(p.Dictation.Provider))
+		}
+		// The model is taken as given: an empty one switches dictation off.
+		next.Dictation.Model = p.Dictation.Model
 	}
 	if p.Chat != nil {
 		if p.Chat.Provider != "" && p.Chat.Provider != next.Chat.Provider {
@@ -216,10 +237,12 @@ func Apply(cfg *config.Config, p Patch) (*config.Config, error) {
 // ---------------------------------------------------------------------------
 // Model discovery
 
-// Suggestion names default models for the two roles.
+// Suggestion names default models for the roles; an empty Transcribe means
+// the provider cannot hear.
 type Suggestion struct {
-	Triage string `json:"triage"`
-	Chat   string `json:"chat"`
+	Triage     string `json:"triage"`
+	Chat       string `json:"chat"`
+	Transcribe string `json:"transcribe"`
 }
 
 // ModelList is the result of listing a provider's models.
@@ -320,14 +343,34 @@ func Suggest(provider string, models []string) Suggestion {
 	var s Suggestion
 	switch provider {
 	case "openai":
-		s.Triage = first("gpt-5.4-mini", "gpt-5-mini", "gpt-4.1-mini")
-		s.Chat = first("gpt-5.5", "gpt-5.4", "gpt-5.1", "gpt-5", "gpt-4.1")
+		// Explicit favourites first, then the newest generation by version
+		// number so a future gpt-5.7 is picked up without a release.
+		s.Triage = first("gpt-5.6-luna", "gpt-5.4-mini", "gpt-5-mini", "gpt-4.1-mini")
+		if s.Triage == "" {
+			s.Triage = newestGPT(models, "luna", "mini", "nano")
+		}
+		s.Chat = first("gpt-5.6-terra", "gpt-5.5", "gpt-5.4", "gpt-5.1", "gpt-5", "gpt-4.1")
+		if s.Chat == "" {
+			s.Chat = newestGPT(models, "terra", "sol", "")
+		}
+		s.Transcribe = first("gpt-transcribe", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "whisper-1")
+	case "gemini":
+		s.Triage = first("gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-3.8-flash", "gemini-2.5-flash")
+		s.Chat = first("gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-2.5-pro", "gemini-2.5-flash")
+		if s.Triage == "" {
+			s.Triage = prefix("gemini-3", "gemini-2.5-flash")
+		}
+		if s.Chat == "" {
+			s.Chat = s.Triage
+		}
+		s.Transcribe = s.Chat
 	case "anthropic":
 		s.Triage = first("claude-haiku-4-5", "claude-sonnet-5", "claude-sonnet-4-6")
 		s.Chat = first("claude-opus-5", "claude-sonnet-5", "claude-opus-4-8")
 	case "openrouter":
-		s.Triage = first("openai/gpt-5.4-mini", "openai/gpt-5-mini", "anthropic/claude-haiku-4.5", "google/gemini-2.5-flash")
-		s.Chat = first("anthropic/claude-sonnet-5", "openai/gpt-5.5", "anthropic/claude-opus-5", "openai/gpt-5.1")
+		s.Triage = first("openai/gpt-5.6-luna", "openai/gpt-5.4-mini", "openai/gpt-5-mini", "anthropic/claude-haiku-4.5", "google/gemini-2.5-flash")
+		s.Chat = first("openai/gpt-5.6-terra", "anthropic/claude-sonnet-5", "openai/gpt-5.5", "anthropic/claude-opus-5", "openai/gpt-5.1")
+		s.Transcribe = first("google/gemini-3.8-flash", "google/gemini-2.5-flash", "google/gemini-2.5-flash-lite")
 	case "ollama":
 		s.Triage = prefix("qwen3:", "llama3.3", "llama3.1", "mistral", "gemma3")
 		s.Chat = prefix("qwen3:", "llama3.3", "llama3.1", "gemma3", "mistral")
@@ -339,6 +382,40 @@ func Suggest(provider string, models []string) Suggestion {
 		s.Chat = s.Triage
 	}
 	return s
+}
+
+// newestGPT returns the model with the highest "gpt-<major>.<minor>" version
+// among plain model names (no dates, no codex/pro/chat-latest variants) whose
+// suffix is one of variants ("" = the bare name). Ties keep variant order.
+func newestGPT(models []string, variants ...string) string {
+	best, bestMajor, bestMinor, bestRank := "", -1, -1, len(variants)
+	for _, m := range models {
+		rest, ok := strings.CutPrefix(m, "gpt-")
+		if !ok {
+			continue
+		}
+		ver, suffix, _ := strings.Cut(rest, "-")
+		majS, minS, _ := strings.Cut(ver, ".")
+		major, err1 := strconv.Atoi(majS)
+		minor, err2 := strconv.Atoi(minS)
+		if err1 != nil || (minS != "" && err2 != nil) {
+			continue
+		}
+		rank := -1
+		for i, v := range variants {
+			if suffix == v {
+				rank = i
+				break
+			}
+		}
+		if rank < 0 {
+			continue
+		}
+		if major > bestMajor || (major == bestMajor && minor > bestMinor) || (major == bestMajor && minor == bestMinor && rank < bestRank) {
+			best, bestMajor, bestMinor, bestRank = m, major, minor, rank
+		}
+	}
+	return best
 }
 
 // ---------------------------------------------------------------------------

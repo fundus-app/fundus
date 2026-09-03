@@ -20,11 +20,12 @@ func NewRegistry(cfg *config.Config, fakeFactory func(name string) Provider) (*R
 		switch pc.Type {
 		case "openai":
 			r.providers[name] = NewOpenAI(OpenAIOptions{
-				Name:       name,
-				BaseURL:    pc.BaseURL,
-				APIKey:     pc.ResolveAPIKey(),
-				Headers:    pc.Headers,
-				Structured: StructuredMode(pc.Structured),
+				Name:          name,
+				BaseURL:       pc.BaseURL,
+				APIKey:        pc.ResolveAPIKey(),
+				Headers:       pc.Headers,
+				Structured:    StructuredMode(pc.Structured),
+				Transcription: pc.TranscriptionMode(),
 			})
 		case "fake":
 			if fakeFactory == nil {
