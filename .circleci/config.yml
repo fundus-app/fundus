@@ -8,8 +8,8 @@
 # On tags v*: the Docker image pushed to GHCR and a GitHub release with every
 # artifact attached.
 #
-# Required project environment variables (Project Settings → Environment
-# Variables, or a context named "fundus-release"):
+# Secrets come from project environment variables (Project Settings →
+# Environment Variables). CircleCI does not pass them to forked pull requests.
 #   GHCR_USER, GHCR_TOKEN   push the Docker image to ghcr.io (optional)
 #   GITHUB_TOKEN            create releases and upload assets (tags only)
 #   APPIMAGETOOL_SHA256, GH_SHA256   optional checksums for the pinned downloads
@@ -350,7 +350,7 @@ jobs:
             docker run --rm "${IMAGE}:${VERSION}" version
 
   docker-push:
-    # Rebuilds and pushes on main and tags only, with the release context.
+    # Rebuilds and pushes on main and tags only (needs GHCR_USER/GHCR_TOKEN).
     docker:
       - image: cimg/base:current
     steps:
@@ -387,36 +387,22 @@ jobs:
             ls -la dist
             gh release create "${CIRCLE_TAG}" dist/* --repo "${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}" --title "${CIRCLE_TAG}" --generate-notes
 
-tag-only: &tag-only
-  filters:
-    tags:
-      only: /^v.*/
-    branches:
-      ignore: /.*/
 
-all-refs: &all-refs
-  filters:
-    tags:
-      only: /^v.*/
 
-main-and-tags: &main-and-tags
-  filters:
-    tags:
-      only: /^v.*/
-    branches:
-      only: main
 
 workflows:
   build:
     jobs:
       - go-test:
-          <<: *all-refs
+          filters: &all-refs
+            tags:
+              only: /^v.*/
       - go-fuzz:
-          <<: *all-refs
+          filters: *all-refs
       - flutter-web:
-          <<: *all-refs
+          filters: *all-refs
       - go-build:
-          <<: *all-refs
+          filters: *all-refs
           name: go-build-<< matrix.goos >>-<< matrix.goarch >>
           requires: [go-test, flutter-web]
           matrix:
@@ -427,25 +413,31 @@ workflows:
               - goos: windows
                 goarch: arm64
       - app-e2e:
-          <<: *all-refs
+          filters: *all-refs
           requires: [go-build-linux-amd64]
       - linux-app:
-          <<: *main-and-tags
+          filters: &main-and-tags
+            tags:
+              only: /^v.*/
+            branches:
+              only: main
           requires: [go-build-linux-amd64]
       - macos-app:
-          <<: *main-and-tags
+          filters: *main-and-tags
           requires: [go-build-darwin-arm64]
       - windows-app:
-          <<: *main-and-tags
+          filters: *main-and-tags
           requires: [go-build-windows-amd64]
       - docker-build:
-          <<: *all-refs
+          filters: *all-refs
           requires: [go-test, flutter-web]
       - docker-push:
-          <<: *main-and-tags
+          filters: *main-and-tags
           requires: [docker-build]
-          context: fundus-release
       - release:
-          <<: *tag-only
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
           requires: [go-build-linux-amd64, go-build-linux-arm64, go-build-darwin-amd64, go-build-darwin-arm64, go-build-windows-amd64, app-e2e, linux-app, macos-app, windows-app, docker-push]
-          context: fundus-release
