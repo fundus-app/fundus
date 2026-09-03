@@ -1,5 +1,5 @@
 BINARY := bin/fundus
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+VERSION ?= $(shell git describe --tags --exclude edge --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X github.com/fundus-app/fundus/internal/api.Version=$(VERSION)
 
 .PHONY: build install test run lint tidy clean appimage ui ui-linux app-test app-e2e

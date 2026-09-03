@@ -6,7 +6,7 @@
 # Output: dist/Fundus-<version>-x86_64.AppImage
 set -e
 command -v desktop-file-validate >/dev/null || { echo "desktop-file-validate is missing: install desktop-file-utils" >&2; exit 1; }
-VERSION="${1:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
+VERSION="${1:-$(git describe --tags --exclude edge --always --dirty 2>/dev/null || echo dev)}"
 TOOL="${2:-}"
 BUNDLE=app/build/linux/x64/release/bundle
 [ -x "$BUNDLE/fundus_app" ] || { echo "no Linux bundle; run: make ui-linux"; exit 1; }

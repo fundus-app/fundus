@@ -6,7 +6,7 @@ name: ci
 on:
   push:
     branches-ignore: [main] # main and tags run through release.yml, which reuses this workflow
-    tags-ignore: ["v*"]
+    tags-ignore: ["v*", "[0-9]*", edge] # version tags run release.yml, edge is moved by it
   pull_request:
   workflow_call:
 
@@ -95,7 +95,7 @@ jobs:
           path: internal/webui/web
       - name: Build
         run: |
-          VERSION="$(git describe --tags --always --dirty)"
+          VERSION="$(git describe --tags --exclude edge --always --dirty)"
           EXT=""; [ "${{ matrix.goos }}" = "windows" ] && EXT=".exe"
           OUT="dist/fundus-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}"
           mkdir -p dist
@@ -167,6 +167,6 @@ jobs:
           fetch-depth: 0
       - name: Build
         run: |
-          VERSION="$(git describe --tags --always --dirty)"
+          VERSION="$(git describe --tags --exclude edge --always --dirty)"
           docker build -f deploy/Dockerfile --build-arg VERSION="${VERSION}" -t fundus:ci .
           docker run --rm fundus:ci version

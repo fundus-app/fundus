@@ -28,7 +28,7 @@ That is the whole idea. No folders to choose, no tags to maintain, no forms to f
 
 ## Start in one minute
 
-1. Download the app for your system from the [releases](../../releases) page:
+1. Download the app for your system from the [releases](../../releases) page (the [edge](../../releases/tag/edge) pre-release is the newest build of `main`):
    **Linux** `Fundus-<version>-x86_64.AppImage` (make it executable and run it),
    **macOS** `Fundus-<version>-macos.zip` (unzip, drag to Applications; the first start needs a right-click → Open because the app is not yet notarised),
    **Windows** `Fundus-<version>-windows.zip` (unzip anywhere and start `fundus_app.exe`; SmartScreen will ask once because the build is unsigned).
@@ -80,7 +80,7 @@ make appimage     # Linux desktop app + daemon as dist/Fundus-<version>-x86_64.A
 make test         # Go tests; make app-test runs flutter analyze and flutter test
 ```
 
-GitHub Actions builds all of it on every push (`.github/workflows/ci.yml`): tests, fuzzing, the web UI, the Go binaries for five platforms, the desktop end-to-end test and the Docker image. On `main` and on tags (`release.yml`) it also builds the desktop apps for Linux, macOS and Windows with the daemon bundled inside and pushes the image to GHCR; tags `v*` publish a GitHub release with every artifact. No secrets to configure: the automatic `GITHUB_TOKEN` is enough.
+GitHub Actions builds all of it on every push (`.github/workflows/ci.yml`): tests, fuzzing, the web UI, the Go binaries for five platforms, the desktop end-to-end test and the Docker image. On `main` and on tags (`release.yml`) it also builds the desktop apps for Linux, macOS and Windows with the daemon bundled inside and pushes the image to GHCR: every push to `main` refreshes the rolling `edge` pre-release and the `:edge` image, a version tag (`v1.2.3` or `1.2.3`) publishes a GitHub release with every artifact and the `:latest` image. No secrets to configure: the automatic `GITHUB_TOKEN` is enough.
 
 Requirements: Go 1.27, Flutter stable (for the UI), ImageMagick for icons. Without Flutter you still get a working daemon and CLI; the binary serves a placeholder page.
 
