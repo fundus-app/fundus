@@ -1,0 +1,451 @@
+# CircleCI pipeline for Fundus.
+#
+# On every push: Go tests (race), Flutter tests, web build, and one-file Go
+# binaries with the embedded web UI for linux/amd64, linux/arm64,
+# darwin/amd64, darwin/arm64 and windows/amd64 (cross-compiled, CGO off).
+# On main and tags v*: additionally the native desktop apps (Linux AppImage,
+# macOS .app zip, Windows zip, all unsigned) with the daemon bundled inside.
+# On tags v*: the Docker image pushed to GHCR and a GitHub release with every
+# artifact attached.
+#
+# Required project environment variables (Project Settings → Environment
+# Variables, or a context named "fundus-release"):
+#   GHCR_USER, GHCR_TOKEN   push the Docker image to ghcr.io (optional)
+#   GITHUB_TOKEN            create releases and upload assets (tags only)
+#   APPIMAGETOOL_SHA256, GH_SHA256   optional checksums for the pinned downloads
+# macOS and Windows executors must be enabled for the organisation.
+# Image tags (cimg/go, cimg/base, cirruslabs/flutter) are mutable; pin them by
+# digest once the pipeline runs green.
+
+version: 2.1
+
+orbs:
+  win: circleci/windows@5.0
+
+parameters:
+  app-name:
+    type: string
+    default: fundus
+  go-version:
+    type: string
+    default: "1.27"
+
+executors:
+  go:
+    docker:
+      - image: cimg/go:<< pipeline.parameters.go-version >>
+    resource_class: medium
+  flutter:
+    docker:
+      - image: ghcr.io/cirruslabs/flutter:stable
+    resource_class: large
+  mac:
+    macos:
+      xcode: "16.2.0"
+    resource_class: macos.m1.medium.gen1
+
+commands:
+  version-env:
+    description: Export VERSION from the git tag or short SHA.
+    steps:
+      - run:
+          name: Determine version
+          command: |
+            VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+            echo "export VERSION=${VERSION}" >> "$BASH_ENV"
+            echo "version: ${VERSION}"
+
+jobs:
+  go-test:
+    executor: go
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - go-mod-v1-{{ checksum "go.sum" }}
+      - run: go mod download
+      - save_cache:
+          key: go-mod-v1-{{ checksum "go.sum" }}
+          paths:
+            - /home/circleci/go/pkg/mod
+      - run:
+          name: Vet and format check
+          command: |
+            go vet ./...
+            test -z "$(gofmt -l internal cmd)" || (gofmt -l internal cmd && exit 1)
+      - run:
+          name: Tests (race detector)
+          command: go test -race -count=1 ./... 2>&1 | tee test.log
+      - store_artifacts:
+          path: test.log
+
+  go-fuzz:
+    # Short fuzzing rounds on the parsers that read foreign input.
+    executor: go
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - go-mod-v1-{{ checksum "go.sum" }}
+      - run: go mod download
+      - run:
+          name: Fuzz parsers (30s each)
+          command: |
+            go test ./internal/doc -run '^$' -fuzz=FuzzParseMarkdownRoundTrip -fuzztime=30s
+            go test ./internal/doc -run '^$' -fuzz=FuzzSetMarkdown -fuzztime=20s
+            go test ./internal/store -run '^$' -fuzz=FuzzParseRecord -fuzztime=20s
+            go test ./internal/triage -run '^$' -fuzz=FuzzParseResult -fuzztime=20s
+
+  flutter-web:
+    executor: flutter
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - pub-v1-{{ checksum "app/pubspec.lock" }}
+      - run:
+          name: Pub get
+          working_directory: app
+          command: flutter pub get
+      - save_cache:
+          key: pub-v1-{{ checksum "app/pubspec.lock" }}
+          paths:
+            - ~/.pub-cache
+      - run:
+          name: Analyze and test
+          working_directory: app
+          command: |
+            flutter analyze
+            flutter test
+      - run:
+          name: Build web
+          working_directory: app
+          command: flutter build web --release --base-href /
+      - run:
+          name: Package web build
+          command: |
+            mkdir -p dist
+            (cd app/build/web && zip -qr ../../../dist/<< pipeline.parameters.app-name >>-web.zip .)
+      - persist_to_workspace:
+          root: .
+          paths:
+            - app/build/web
+            - dist
+      - store_artifacts:
+          path: dist
+
+  go-build:
+    executor: go
+    parameters:
+      goos:
+        type: string
+      goarch:
+        type: string
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+      - version-env
+      - restore_cache:
+          keys:
+            - go-mod-v1-{{ checksum "go.sum" }}
+      - run:
+          name: Embed web UI
+          command: |
+            rm -rf internal/webui/web/*
+            cp -r app/build/web/. internal/webui/web/
+            touch internal/webui/web/.gitkeep
+      - run:
+          name: Build << parameters.goos >>/<< parameters.goarch >>
+          command: |
+            mkdir -p dist
+            EXT=""; [ "<< parameters.goos >>" = "windows" ] && EXT=".exe"
+            OUT="dist/<< pipeline.parameters.app-name >>-<< parameters.goos >>-<< parameters.goarch >>${EXT}"
+            CGO_ENABLED=0 GOOS=<< parameters.goos >> GOARCH=<< parameters.goarch >> \
+              go build -trimpath -ldflags "-s -w -X github.com/fundus-app/fundus/internal/api.Version=${VERSION}" \
+              -o "${OUT}" ./cmd/fundus
+            ls -la "${OUT}"
+            (cd dist && sha256sum "$(basename "${OUT}")" > "$(basename "${OUT}").sha256")
+      - run:
+          name: Smoke-test the linux binary (embedded UI, health)
+          command: |
+            if [ "<< parameters.goos >>/<< parameters.goarch >>" != "linux/amd64" ]; then echo "skip"; exit 0; fi
+            BIN="dist/<< pipeline.parameters.app-name >>-linux-amd64"
+            "$BIN" version
+            FUNDUS_OPEN=0 FUNDUS_LISTEN=127.0.0.1:7433 FUNDUS_DATA_DIR=/tmp/smoke "$BIN" serve --fake &
+            PID=$!
+            for i in $(seq 1 50); do curl -sf http://127.0.0.1:7433/v1/health >/dev/null && break; sleep 0.2; done
+            curl -sf http://127.0.0.1:7433/v1/health | grep -q '"ui":true'
+            curl -sf http://127.0.0.1:7433/ | grep -q '<title>Fundus</title>'
+            kill $PID; wait $PID || true
+      - persist_to_workspace:
+          root: .
+          paths:
+            - dist/<< pipeline.parameters.app-name >>-<< parameters.goos >>-<< parameters.goarch >>*
+      - store_artifacts:
+          path: dist
+
+  linux-app:
+    # Native Flutter desktop app for Linux, packaged as a single AppImage.
+    executor: flutter
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+      - version-env
+      - run:
+          name: Linux build dependencies
+          command: |
+            SUDO=""; command -v sudo >/dev/null && [ "$(id -u)" != "0" ] && SUDO=sudo
+            $SUDO apt-get update -qq
+            $SUDO apt-get install -y -qq clang cmake ninja-build pkg-config libgtk-3-dev libfuse2 file zip
+      - run:
+          name: Build Linux app
+          working_directory: app
+          command: |
+            flutter config --enable-linux-desktop
+            flutter pub get
+            flutter build linux --release
+      - run:
+          name: Package AppImage (unsigned; the daemon travels inside)
+          command: |
+            set -e
+            mkdir -p bin
+            cp "dist/<< pipeline.parameters.app-name >>-linux-amd64" bin/fundus
+            chmod +x bin/fundus
+            # Pinned appimagetool release; update the version and checksum together.
+            curl -sSL -o /tmp/appimagetool https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-x86_64.AppImage
+            if [ -n "${APPIMAGETOOL_SHA256:-}" ]; then echo "${APPIMAGETOOL_SHA256}  /tmp/appimagetool" | sha256sum -c -; fi
+            chmod +x /tmp/appimagetool
+            scripts/appimage.sh "${VERSION}" /tmp/appimagetool
+      - persist_to_workspace:
+          root: .
+          paths:
+            - dist/Fundus-*-x86_64.AppImage
+      - store_artifacts:
+          path: dist
+
+  app-e2e:
+    # The real desktop app against the real daemon built by go-build-linux-amd64.
+    executor: flutter
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+      - run:
+          name: Linux desktop dependencies and a virtual display
+          command: |
+            SUDO=""; command -v sudo >/dev/null && [ "$(id -u)" != "0" ] && SUDO=sudo
+            $SUDO apt-get update -qq
+            $SUDO apt-get install -y -qq clang cmake ninja-build pkg-config libgtk-3-dev xvfb
+      - run:
+          name: End-to-end test
+          working_directory: app
+          command: |
+            set -e
+            chmod +x "../dist/<< pipeline.parameters.app-name >>-linux-amd64"
+            flutter config --enable-linux-desktop
+            flutter pub get
+            FUNDUS_BIN="$PWD/../dist/<< pipeline.parameters.app-name >>-linux-amd64" \
+              xvfb-run -a flutter test integration_test -d linux
+
+  macos-app:
+    # Native Flutter desktop app for macOS, ad-hoc signed (not notarized).
+    executor: mac
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+      - version-env
+      - run:
+          name: Install Flutter
+          command: |
+            git clone --depth 1 -b stable https://github.com/flutter/flutter.git "$HOME/flutter"
+            echo 'export PATH="$HOME/flutter/bin:$PATH"' >> "$BASH_ENV"
+            "$HOME/flutter/bin/flutter" config --no-analytics --enable-macos-desktop
+            "$HOME/flutter/bin/flutter" precache --macos
+      - run:
+          name: Build macOS app
+          working_directory: app
+          command: |
+            flutter pub get
+            flutter build macos --release
+      - run:
+          name: Package (ad-hoc signature, unsigned for distribution)
+          command: |
+            APP=<< pipeline.parameters.app-name >>
+            BUNDLE="$(ls -d app/build/macos/Build/Products/Release/*.app | head -1)"
+            cp "dist/${APP}-darwin-arm64" "${BUNDLE}/Contents/MacOS/${APP}"
+            chmod +x "${BUNDLE}/Contents/MacOS/${APP}"
+            codesign --force --deep --sign - "${BUNDLE}"
+            mkdir -p dist
+            ditto -c -k --keepParent "${BUNDLE}" "dist/Fundus-${VERSION}-macos.zip"
+            ls -la dist
+      - persist_to_workspace:
+          root: .
+          paths:
+            - dist/Fundus-*-macos.zip
+      - store_artifacts:
+          path: dist
+
+  windows-app:
+    # Native Flutter desktop app for Windows, zipped (unsigned).
+    executor:
+      name: win/default
+      size: medium
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+      - run:
+          name: Install Flutter
+          shell: powershell.exe
+          command: |
+            choco install -y flutter --no-progress
+            Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"
+            refreshenv
+            $env:PATH = "C:\tools\flutter\bin;" + $env:PATH
+            flutter config --no-analytics --enable-windows-desktop
+            flutter doctor -v
+      - run:
+          name: Build Windows app
+          shell: powershell.exe
+          command: |
+            $env:PATH = "C:\tools\flutter\bin;" + $env:PATH
+            cd app
+            flutter pub get
+            flutter build windows --release
+      - run:
+          name: Package
+          shell: powershell.exe
+          command: |
+            $version = (git describe --tags --always)
+            $app = "<< pipeline.parameters.app-name >>"
+            $bundle = "app\build\windows\x64\runner\Release"
+            Copy-Item "dist\$app-windows-amd64.exe" "$bundle\$app.exe"
+            New-Item -ItemType Directory -Force -Path dist | Out-Null
+            Compress-Archive -Path "$bundle\*" -DestinationPath "dist\Fundus-$version-windows.zip" -Force
+            Get-ChildItem dist
+      - persist_to_workspace:
+          root: .
+          paths:
+            - dist/Fundus-*-windows.zip
+      - store_artifacts:
+          path: dist
+
+  docker-build:
+    # Builds the image on every ref without any secrets (safe for fork PRs).
+    docker:
+      - image: cimg/base:current
+    steps:
+      - checkout
+      - setup_remote_docker:
+          docker_layer_caching: false
+      - version-env
+      - run:
+          name: Build image
+          command: |
+            IMAGE="ghcr.io/${CIRCLE_PROJECT_USERNAME}/<< pipeline.parameters.app-name >>"
+            docker build -f deploy/Dockerfile --build-arg VERSION="${VERSION}" -t "${IMAGE}:${VERSION}" .
+            docker run --rm "${IMAGE}:${VERSION}" version
+
+  docker-push:
+    # Rebuilds and pushes on main and tags only, with the release context.
+    docker:
+      - image: cimg/base:current
+    steps:
+      - checkout
+      - setup_remote_docker:
+          docker_layer_caching: false
+      - version-env
+      - run:
+          name: Build and push image
+          command: |
+            if [ -z "${GHCR_TOKEN:-}" ]; then echo "GHCR_TOKEN not set; skipping push"; exit 0; fi
+            IMAGE="ghcr.io/${CIRCLE_PROJECT_USERNAME}/<< pipeline.parameters.app-name >>"
+            docker build -f deploy/Dockerfile --build-arg VERSION="${VERSION}" -t "${IMAGE}:${VERSION}" -t "${IMAGE}:latest" .
+            echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USER:-$CIRCLE_PROJECT_USERNAME}" --password-stdin
+            docker push "${IMAGE}:${VERSION}"
+            if [ -n "${CIRCLE_TAG:-}" ]; then docker push "${IMAGE}:latest"; fi
+
+  release:
+    docker:
+      - image: cimg/base:current
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+      - run:
+          name: Create GitHub release with all artifacts
+          command: |
+            if [ -z "${GITHUB_TOKEN:-}" ]; then echo "GITHUB_TOKEN not set; artifacts stay on CircleCI"; exit 0; fi
+            # Pinned GitHub CLI release; update version and checksum together.
+            GH_VERSION=2.63.2
+            curl -sSL -o /tmp/gh.deb "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.deb"
+            if [ -n "${GH_SHA256:-}" ]; then echo "${GH_SHA256}  /tmp/gh.deb" | sha256sum -c -; fi
+            sudo dpkg -i /tmp/gh.deb
+            ls -la dist
+            gh release create "${CIRCLE_TAG}" dist/* --repo "${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}" --title "${CIRCLE_TAG}" --generate-notes
+
+tag-only: &tag-only
+  filters:
+    tags:
+      only: /^v.*/
+    branches:
+      ignore: /.*/
+
+all-refs: &all-refs
+  filters:
+    tags:
+      only: /^v.*/
+
+main-and-tags: &main-and-tags
+  filters:
+    tags:
+      only: /^v.*/
+    branches:
+      only: main
+
+workflows:
+  build:
+    jobs:
+      - go-test:
+          <<: *all-refs
+      - go-fuzz:
+          <<: *all-refs
+      - flutter-web:
+          <<: *all-refs
+      - go-build:
+          <<: *all-refs
+          name: go-build-<< matrix.goos >>-<< matrix.goarch >>
+          requires: [go-test, flutter-web]
+          matrix:
+            parameters:
+              goos: [linux, darwin, windows]
+              goarch: [amd64, arm64]
+            exclude:
+              - goos: windows
+                goarch: arm64
+      - app-e2e:
+          <<: *all-refs
+          requires: [go-build-linux-amd64]
+      - linux-app:
+          <<: *main-and-tags
+          requires: [go-build-linux-amd64]
+      - macos-app:
+          <<: *main-and-tags
+          requires: [go-build-darwin-arm64]
+      - windows-app:
+          <<: *main-and-tags
+          requires: [go-build-windows-amd64]
+      - docker-build:
+          <<: *all-refs
+          requires: [go-test, flutter-web]
+      - docker-push:
+          <<: *main-and-tags
+          requires: [docker-build]
+          context: fundus-release
+      - release:
+          <<: *tag-only
+          requires: [go-build-linux-amd64, go-build-linux-arm64, go-build-darwin-amd64, go-build-darwin-arm64, go-build-windows-amd64, app-e2e, linux-app, macos-app, windows-app, docker-push]
+          context: fundus-release

@@ -1,0 +1,12 @@
+/bin/
+/dist/
+/data/
+*.corrupt-*
+/app/build/
+/app/.dart_tool/
+/internal/webui/web/*
+!/internal/webui/web/.gitkeep
+.env
+/fundus
+/AppDir/
+*.log

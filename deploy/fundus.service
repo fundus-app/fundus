@@ -1,0 +1,25 @@
+# User-level systemd unit for the Fundus daemon.
+# Install:  mkdir -p ~/.config/systemd/user && cp deploy/fundus.service ~/.config/systemd/user/
+#           systemctl --user daemon-reload && systemctl --user enable --now fundus
+# Put API keys in ~/.config/fundus/env (mode 600), e.g. OPENAI_API_KEY=sk-...
+[Unit]
+Description=Fundus daemon (personal knowledge & task system)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/fundus serve
+EnvironmentFile=-%h/.config/fundus/env
+Restart=on-failure
+RestartSec=3
+# Hardening (the daemon only needs its data and config directories).
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+# Parent directories, not the fundus subdirectories: ProtectSystem=strict refuses
+# to start when a listed path does not exist yet, and the daemon writes
+# ~/.local/state/fundus/fundus.log when it has no terminal.
+ReadWritePaths=%h/.local/share %h/.config %h/.local/state
+
+[Install]
+WantedBy=default.target

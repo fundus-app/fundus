@@ -1,0 +1,21 @@
+services:
+  fundus:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: fundus:local
+    ports:
+      - "127.0.0.1:7433:7433"
+    environment:
+      FUNDUS_TOKEN: ${FUNDUS_TOKEN:?set a bearer token (fundus token new)}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - fundus-data:/data   # data, event log, and config.toml (keys entered in the UI)
+      # Optional: mount a config file
+      # - ./config.toml:/config/config.toml:ro
+    # command: ["serve", "--config", "/config/config.toml"]
+    restart: unless-stopped
+volumes:
+  fundus-data:
