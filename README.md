@@ -80,7 +80,7 @@ make appimage     # Linux desktop app + daemon as dist/Fundus-<version>-x86_64.A
 make test         # Go tests; make app-test runs flutter analyze and flutter test
 ```
 
-CircleCI builds all of it on every push: the Go binaries for five platforms, and on `main` and tags the desktop apps for Linux, macOS and Windows with the daemon bundled inside. Tags `v*` publish a GitHub release with every artifact.
+GitHub Actions builds all of it on every push (`.github/workflows/ci.yml`): tests, fuzzing, the web UI, the Go binaries for five platforms, the desktop end-to-end test and the Docker image. On `main` and on tags (`release.yml`) it also builds the desktop apps for Linux, macOS and Windows with the daemon bundled inside and pushes the image to GHCR; tags `v*` publish a GitHub release with every artifact. No secrets to configure: the automatic `GITHUB_TOKEN` is enough.
 
 Requirements: Go 1.27, Flutter stable (for the UI), ImageMagick for icons. Without Flutter you still get a working daemon and CLI; the binary serves a placeholder page.
 

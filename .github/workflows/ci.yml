@@ -1,0 +1,159 @@
+# Tests, fuzzing, the web UI, one-file binaries and the desktop end-to-end
+# test. Runs on every push and pull request. Public repository: all runners
+# are free, GITHUB_TOKEN is provided automatically.
+name: ci
+
+on:
+  push:
+    branches-ignore: [main] # main and tags run through release.yml, which reuses this workflow
+    tags-ignore: ["v*"]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.27.x"
+  FLUTTER_CHANNEL: stable
+
+jobs:
+  go-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Vet and format check
+        run: |
+          go vet ./...
+          test -z "$(gofmt -l internal cmd)" || (gofmt -l internal cmd && exit 1)
+      - name: Tests (race detector, includes the CLI end-to-end tests)
+        run: go test -race -count=1 ./...
+
+  go-fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Fuzz the parsers that read foreign input
+        run: |
+          go test ./internal/doc -run '^$' -fuzz=FuzzParseMarkdownRoundTrip -fuzztime=30s
+          go test ./internal/doc -run '^$' -fuzz=FuzzSetMarkdown -fuzztime=20s
+          go test ./internal/store -run '^$' -fuzz=FuzzParseRecord -fuzztime=20s
+          go test ./internal/triage -run '^$' -fuzz=FuzzParseResult -fuzztime=20s
+
+  flutter-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          cache: true
+      - name: Analyze and test
+        working-directory: app
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test
+      - name: Build web
+        working-directory: app
+        run: flutter build web --release --base-href /
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web
+          path: app/build/web
+          retention-days: 7
+
+  go-build:
+    # One static binary per platform with the web UI embedded.
+    needs: [go-test, flutter-web]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # git describe needs the tags
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: web
+          path: internal/webui/web
+      - name: Build
+        run: |
+          VERSION="$(git describe --tags --always --dirty)"
+          EXT=""; [ "${{ matrix.goos }}" = "windows" ] && EXT=".exe"
+          OUT="dist/fundus-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}"
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build -trimpath -ldflags "-s -w -X github.com/fundus-app/fundus/internal/api.Version=${VERSION}" -o "${OUT}" ./cmd/fundus
+          (cd dist && sha256sum "$(basename "${OUT}")" > "$(basename "${OUT}").sha256")
+          ls -la dist
+      - name: Smoke test (linux/amd64 only)
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: |
+          BIN=dist/fundus-linux-amd64
+          "$BIN" version
+          FUNDUS_OPEN=0 FUNDUS_LISTEN=127.0.0.1:7433 FUNDUS_DATA_DIR=/tmp/smoke "$BIN" serve --fake &
+          for i in $(seq 1 50); do curl -sf http://127.0.0.1:7433/v1/health >/dev/null && break; sleep 0.2; done
+          curl -sf http://127.0.0.1:7433/v1/health | grep -q '"ui":true'
+          curl -sf http://127.0.0.1:7433/ | grep -q '<title>Fundus</title>'
+          kill %1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fundus-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          retention-days: 14
+
+  app-e2e:
+    # The real desktop app against a real daemon under Xvfb.
+    needs: [go-build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          cache: true
+      - name: Linux desktop dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang cmake ninja-build pkg-config libgtk-3-dev xvfb
+      - uses: actions/download-artifact@v4
+        with:
+          name: fundus-linux-amd64
+          path: dist
+      - name: Run the integration test
+        working-directory: app
+        run: |
+          chmod +x ../dist/fundus-linux-amd64
+          flutter config --enable-linux-desktop
+          flutter pub get
+          FUNDUS_BIN=../dist/fundus-linux-amd64 xvfb-run -a flutter test integration_test -d linux
+
+  docker-build:
+    # Builds the image on every push without pushing (forks included).
+    needs: [go-test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build
+        run: |
+          VERSION="$(git describe --tags --always --dirty)"
+          docker build -f deploy/Dockerfile --build-arg VERSION="${VERSION}" -t fundus:ci .
+          docker run --rm fundus:ci version

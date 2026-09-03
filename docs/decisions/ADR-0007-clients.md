@@ -16,8 +16,8 @@ The user wants a single static Go binary, Flutter as the UI, and a Docker image;
 
 ## Consequences
 
-One artifact to deploy for the server case. Native desktop remains a separate bundle (Flutter Linux produces an executable plus libraries), packaged as an AppImage by CI; Flatpak later.
+One artifact to deploy for the server case. Native desktop remains a separate bundle (Flutter Linux produces an executable plus libraries), packaged as an AppImage by GitHub Actions; Flatpak later.
 
 ## Amendment (2026-09-03)
 
-The native desktop apps are the primary distribution: Linux AppImage, macOS app, Windows zip, each with the `fundus` daemon bundled next to the app executable so the app can start it itself. They are built by CircleCI on `main` and on tags. The single binary with the embedded web UI remains for servers, containers and headless use.
+The native desktop apps are the primary distribution: Linux AppImage, macOS app, Windows zip, each with the `fundus` daemon bundled next to the app executable so the app can start it itself. They are built by GitHub Actions on `main` and on tags. The single binary with the embedded web UI remains for servers, containers and headless use.

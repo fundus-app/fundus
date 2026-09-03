@@ -1,0 +1,166 @@
+# Desktop apps (with the daemon bundled), the Docker image and GitHub
+# releases. Runs on pushes to main (apps and image are published as
+# workflow artifacts and as the "latest" image) and on tags v* (everything
+# is attached to a GitHub release). Uses only the automatic GITHUB_TOKEN.
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: write   # create releases
+  packages: write   # push to ghcr.io
+
+env:
+  GO_VERSION: "1.27.x"
+  FLUTTER_CHANNEL: stable
+
+jobs:
+  ci:
+    # Reuse the full test-and-build workflow so releases never skip tests.
+    uses: ./.github/workflows/ci.yml
+
+  linux-app:
+    needs: [ci]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          cache: true
+      - name: Linux desktop dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang cmake ninja-build pkg-config libgtk-3-dev libfuse2 file zip
+      - uses: actions/download-artifact@v4
+        with:
+          name: fundus-linux-amd64
+          path: dist
+      - name: Build the Linux app and package the AppImage
+        run: |
+          VERSION="$(git describe --tags --always --dirty)"
+          mkdir -p bin && cp dist/fundus-linux-amd64 bin/fundus && chmod +x bin/fundus
+          (cd app && flutter config --enable-linux-desktop && flutter pub get && flutter build linux --release)
+          curl -sSL -o /tmp/appimagetool https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-x86_64.AppImage
+          chmod +x /tmp/appimagetool
+          scripts/appimage.sh "${VERSION}" /tmp/appimagetool
+          (cd dist && sha256sum Fundus-*-x86_64.AppImage > "Fundus-${VERSION}-x86_64.AppImage.sha256")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Fundus-linux-appimage
+          path: |
+            dist/Fundus-*-x86_64.AppImage
+            dist/Fundus-*-x86_64.AppImage.sha256
+
+  macos-app:
+    needs: [ci]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: fundus-darwin-arm64
+          path: dist
+      - name: Build the macOS app (ad-hoc signed, not notarised)
+        run: |
+          VERSION="$(git describe --tags --always --dirty)"
+          (cd app && flutter config --enable-macos-desktop && flutter pub get && flutter build macos --release)
+          BUNDLE="$(ls -d app/build/macos/Build/Products/Release/*.app | head -1)"
+          cp dist/fundus-darwin-arm64 "${BUNDLE}/Contents/MacOS/fundus"
+          chmod +x "${BUNDLE}/Contents/MacOS/fundus"
+          codesign --force --deep --sign - "${BUNDLE}"
+          ditto -c -k --keepParent "${BUNDLE}" "dist/Fundus-${VERSION}-macos.zip"
+          (cd dist && shasum -a 256 "Fundus-${VERSION}-macos.zip" > "Fundus-${VERSION}-macos.zip.sha256")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Fundus-macos
+          path: |
+            dist/Fundus-*-macos.zip
+            dist/Fundus-*-macos.zip.sha256
+
+  windows-app:
+    needs: [ci]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: fundus-windows-amd64
+          path: dist
+      - name: Build the Windows app (unsigned)
+        shell: pwsh
+        run: |
+          $version = (git describe --tags --always --dirty)
+          Set-Location app
+          flutter config --enable-windows-desktop
+          flutter pub get
+          flutter build windows --release
+          Set-Location ..
+          $bundle = "app\build\windows\x64\runner\Release"
+          Copy-Item "dist\fundus-windows-amd64.exe" "$bundle\fundus.exe"
+          Compress-Archive -Path "$bundle\*" -DestinationPath "dist\Fundus-$version-windows.zip" -Force
+          (Get-FileHash "dist\Fundus-$version-windows.zip" -Algorithm SHA256).Hash.ToLower() + "  Fundus-$version-windows.zip" | Out-File -Encoding ascii "dist\Fundus-$version-windows.zip.sha256"
+          Get-ChildItem dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Fundus-windows
+          path: |
+            dist/Fundus-*-windows.zip
+            dist/Fundus-*-windows.zip.sha256
+
+  docker-push:
+    needs: [ci]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        run: |
+          VERSION="$(git describe --tags --always --dirty)"
+          IMAGE="ghcr.io/${{ github.repository_owner }}/fundus"
+          # main → :edge, tags → :<version> and :latest
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then TAG2=latest; else TAG2=edge; fi
+          docker build -f deploy/Dockerfile --build-arg VERSION="${VERSION}" -t "${IMAGE}:${VERSION}" -t "${IMAGE}:${TAG2}" .
+          docker push "${IMAGE}:${VERSION}"
+          docker push "${IMAGE}:${TAG2}"
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux-app, macos-app, windows-app, docker-push]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Collect
+        run: |
+          mkdir -p dist
+          find artifacts -type f \( -name 'fundus-*' -o -name 'Fundus-*' \) -exec cp {} dist/ \;
+          ls -la dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
