@@ -146,8 +146,11 @@ Progress is also streamed as `chat.step` events. Assistant text cites objects as
 | `GET /v1/backup` | A zip of the event log segments and the latest snapshot, taken under the write lock (consistent). |
 | `POST /v1/conversations/{id}/messages` | Body may carry `"id": "cap_…"` (client-generated capture id) to make the turn idempotent: a repeat returns the stored reply. Conversations now return `messages` as message objects (`id`, `conversation_id`, `index`, `role`, `text`, `blocks`, `capture_id`, `txn_ids`, `refs`, `created_at`, `interrupted`). |
 | `GET /v1/health` | Adds `timezone`, `ui` (embedded web UI present) and `warnings[]` (missing API keys, recovered log). 0.3.5 adds `dictation` (a usable transcription provider is configured). |
+| `GET /v1/topics/{id}` | 0.3.5: `tasks` holds open, waiting and deferred tasks; completed ones move to `done_tasks`, most recently finished first. |
+| `GET /v1/tasks?state=done` | 0.3.5: completed tasks are ordered by `completed_at`, newest first. |
+| `object.archive` | Is what "Delete" in the client sends: the note, task or topic leaves every view and search, the receipt reads "Deleted …", undo (or `object.unarchive`, "Restored …") brings it back. Models may not archive; `object.remove` stays reserved for undo. Deleting a topic leaves its notes and tasks in place. |
 
-SSE `capture.changed` payloads include `receipts[]`; `txn.committed` frames carry `id: <seq>`; clients resume with `GET /v1/changes?after=<last id>`. Receipts include `touched[]` (object ids the transaction changed) and an `object.changed` event `{id,type,rev,removed}` is published per touched non-capture object.
+SSE `capture.changed` payloads include `receipts[]`; `txn.committed` frames carry `id: <seq>`; clients resume with `GET /v1/changes?after=<last id>`. Receipts include `touched[]` (object ids the transaction changed) and an `object.changed` event `{id,type,rev,removed}` is published per touched non-capture object. Since 0.3.5 receipts also carry `affected[]`: topics whose member list changed (a note or task was created in them, linked or unlinked) without the topic record itself changing; each gets an `object.changed` event with `members: true` and its unchanged `rev`, so a topic page can refresh. Undo ignores `affected`.
 
 Captures never appear in the Changes view (their `capture.create` receipts are quiet); they have their own views.
 
@@ -197,6 +200,8 @@ The model never emits core ops. Its vocabulary (`internal/triage/schema.go`) is 
 | `task.complete` | `task_id` | `task.update` state `done` |
 | `task.mention` | `task_id` | `task.update` with `mention` |
 | `link` | `note_id` or `task_id`, `topics[]` | `note.update` / `task.update` adding topics, nothing else; used to bring earlier notes and tasks into a topic the model creates |
+
+Existing topics attached by the model (in `topics[]` of any op) are kept only when the capture text or the object names the topic or one of its aliases, or shares a significant word with it (prefix match for compounds: "Heizung" evidences "Heizungsdaten"); otherwise the topic is dropped from that op and the rest of the plan stands. Topics created in the same plan are always kept. Small models otherwise attach unrelated topics on a whim.
 | `task.update` | `task_id`, `text?`, `state?`, `due?`, `effort_minutes?`, `importance?`, `waiting_on?`, `topics[]` | `task.update` |
 | `topic.create` | `name`, `kind?`, `aliases[]` | `topic.create` (skipped when the name already exists) |
 

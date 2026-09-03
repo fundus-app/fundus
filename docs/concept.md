@@ -235,6 +235,8 @@ Implemented: the Go daemon with event log, snapshots, hash-chain verification, t
 
 - Dictation: microphone in the capture bar, `POST /v1/transcribe`, `[dictation]` role in the config; OpenAI via `/audio/transcriptions`, Gemini and OpenRouter via `input_audio` in a chat completion; topic names as spelling hints; the transcript is reviewed before capture.
 - Google Gemini as a provider through its OpenAI-compatible endpoint; Ollama accepts any server address without a key.
+- Delete for notes, tasks and topics in the client (`object.archive`, receipt "Deleted …", undo restores); a Done view of completed tasks ordered by completion time and a folded "Done" section on topic pages (`done_tasks`); topics can be unlinked from a note or task in place. The triage prompt links an existing topic only when the capture is clearly about it.
+- Receipts and `object.changed` events name the topics whose members changed (`affected[]`, `members: true`), so an open topic page refreshes when earlier notes are linked into it; the client also refreshes the open detail on every committed transaction.
 - Defaults moved to the current generation (OpenAI `gpt-5.6-luna` for filing, `gpt-5.6-terra` for conversation, Gemini `gemini-3.5-flash-lite` / `gemini-3.8-flash`); the wizard shows the provider's model list with the suggestions preselected, and version parsing keeps suggestions current when a new family appears.
 
 ### 0.3.4 (2026-09-03, topic catch-up and polish)

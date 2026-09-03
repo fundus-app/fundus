@@ -464,6 +464,7 @@ func Plan(c *core.Core, policy config.Policy, originID, fallbackText, classifica
 	var ops []model.Op
 	newTopics := map[string]string{}     // normalized name -> id created in this plan
 	newTopicNames := map[string]string{} // id -> display name, for the catch-up below
+	inPlan := map[string]bool{}          // topic ids created in this plan: always plausible
 	newNotes := map[string]string{}      // normalized title -> note id created in this plan
 	newTopicOps := 0
 	maxNew := policy.MaxNewTopicsPerCapture
@@ -481,6 +482,7 @@ func Plan(c *core.Core, policy config.Policy, originID, fallbackText, classifica
 		id := newTopicID()
 		newTopics[norm] = id
 		newTopicNames[id] = name
+		inPlan[id] = true
 		newTopicOps++
 		n := name
 		ops = append(ops, model.Op{Op: "topic.create", ID: id, Name: &n, Kind: kind, Aliases: aliases})
@@ -525,6 +527,7 @@ func Plan(c *core.Core, policy config.Policy, originID, fallbackText, classifica
 			if err != nil {
 				return nil, err
 			}
+			topics = plausibleTopics(c, topics, inPlan, fallbackText+"\n"+op.Title+"\n"+op.Markdown)
 			title := trimSentence(op.Title)
 			md := strings.TrimSpace(op.Markdown)
 			if md == "" {
@@ -572,6 +575,7 @@ func Plan(c *core.Core, policy config.Policy, originID, fallbackText, classifica
 			if err != nil {
 				return nil, err
 			}
+			topics = plausibleTopics(c, topics, inPlan, fallbackText+"\n"+n.NoteTitle+"\n"+op.Markdown)
 			ops = append(ops, model.Op{Op: "note.revise", ID: n.ID, ExpectedRev: n.Rev, Origins: []string{originID},
 				Edits: []doc.Edit{{Action: "append", Markdown: strings.TrimSpace(op.Markdown), Sources: []string{originID}}}})
 			if len(topics) > 0 {
@@ -582,6 +586,7 @@ func Plan(c *core.Core, policy config.Policy, originID, fallbackText, classifica
 			if err != nil {
 				return nil, err
 			}
+			topics = plausibleTopics(c, topics, inPlan, fallbackText+"\n"+op.Text)
 			o := model.Op{Op: "task.create", Text: trimSentence(op.Text), Topics: topics, Origins: []string{originID},
 				Due: op.Due, EffortMinutes: op.EffortMinutes, Importance: op.Importance, State: op.State}
 			if op.WaitingOn != "" {
@@ -610,7 +615,9 @@ func Plan(c *core.Core, policy config.Policy, originID, fallbackText, classifica
 				if !ok {
 					return nil, &ValidationError{Msg: fmt.Sprintf("%s is not a note", op.NoteID)}
 				}
-				ops = append(ops, model.Op{Op: "note.update", ID: n.ID, ExpectedRev: n.Rev, AddTopics: topics})
+				if topics = plausibleTopics(c, topics, inPlan, fallbackText+"\n"+n.NoteTitle+"\n"+n.Body.PlainText()); len(topics) > 0 {
+					ops = append(ops, model.Op{Op: "note.update", ID: n.ID, ExpectedRev: n.Rev, AddTopics: topics})
+				}
 			case op.TaskID != "" && op.NoteID == "":
 				if err := allowed(op.TaskID); err != nil {
 					return nil, err
@@ -623,7 +630,9 @@ func Plan(c *core.Core, policy config.Policy, originID, fallbackText, classifica
 				if !ok {
 					return nil, &ValidationError{Msg: fmt.Sprintf("%s is not a task", op.TaskID)}
 				}
-				ops = append(ops, model.Op{Op: "task.update", ID: tk.ID, ExpectedRev: tk.Rev, AddTopics: topics})
+				if topics = plausibleTopics(c, topics, inPlan, fallbackText+"\n"+tk.Text); len(topics) > 0 {
+					ops = append(ops, model.Op{Op: "task.update", ID: tk.ID, ExpectedRev: tk.Rev, AddTopics: topics})
+				}
 			default:
 				return nil, &ValidationError{Msg: "link needs exactly one of note_id or task_id"}
 			}
@@ -751,8 +760,16 @@ func catchUp(c *core.Core, ops []model.Op, newTopics map[string]string, shown ma
 // mentionsName reports whether text contains name as a whole word, ignoring
 // case. Names shorter than three letters never match.
 func mentionsName(text, name string) bool {
+	if len([]rune(strings.TrimSpace(name))) < 3 {
+		return false
+	}
+	return mentionsWord(text, name)
+}
+
+// mentionsWord is mentionsName without the length rule.
+func mentionsWord(text, name string) bool {
 	name = strings.ToLower(strings.TrimSpace(name))
-	if len([]rune(name)) < 3 {
+	if name == "" {
 		return false
 	}
 	low := strings.ToLower(text)
@@ -880,4 +897,88 @@ func trimSentence(s string) string {
 		s = strings.TrimSpace(strings.TrimSuffix(s, "."))
 	}
 	return s
+}
+
+// plausibleTopics keeps, from a model's topic choice, the topics the text
+// gives evidence for: topics created in this same plan (the model named them
+// for this capture) and existing topics whose name or alias the text mentions
+// or shares a significant word with. Small models attach unrelated topics on a
+// whim ("UI updates" → "RPG mit Godot Engine"); a wrong link misleads, a
+// missing one is one click away.
+func plausibleTopics(c *core.Core, topics []string, inPlan map[string]bool, evidence string) []string {
+	if len(topics) == 0 {
+		return topics
+	}
+	words := significantTokens(evidence)
+	var out []string
+	for _, id := range topics {
+		if inPlan[id] {
+			out = append(out, id)
+			continue
+		}
+		obj, err := c.Get(id)
+		if err != nil {
+			continue
+		}
+		tp, ok := obj.(*model.Topic)
+		if !ok {
+			continue
+		}
+		if topicEvidenced(tp, evidence, words) {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+func topicEvidenced(tp *model.Topic, evidence string, words map[string]bool) bool {
+	// Aliases are deliberate abbreviations ("PV"), so they match as whole
+	// words at any length; the name needs three letters like everywhere else.
+	for _, a := range tp.Aliases {
+		if mentionsWord(evidence, a) {
+			return true
+		}
+	}
+	names := append([]string{tp.Name}, tp.Aliases...)
+	for _, n := range names {
+		if mentionsName(evidence, n) {
+			return true
+		}
+		for t := range significantTokens(n) {
+			if words[t] {
+				return true
+			}
+			// German compounds: "Heizung" evidences "Heizungsdaten".
+			if len([]rune(t)) >= 5 {
+				for w := range words {
+					if strings.HasPrefix(w, t) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+// significantTokens lowercases and splits text into words of four or more
+// letters that are not function words.
+func significantTokens(text string) map[string]bool {
+	out := map[string]bool{}
+	for _, w := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) }) {
+		if len([]rune(w)) < 4 {
+			continue
+		}
+		skip := false
+		for _, stop := range stopwords {
+			if stop[w] {
+				skip = true
+				break
+			}
+		}
+		if !skip {
+			out[w] = true
+		}
+	}
+	return out
 }

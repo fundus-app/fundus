@@ -174,6 +174,9 @@ class Receipt {
   final bool quiet;
   final List<String> touched;
 
+  /// Topics whose member list changed (created in, linked, unlinked).
+  final List<String> affected;
+
   const Receipt({
     required this.txnId,
     this.seq = 0,
@@ -188,6 +191,7 @@ class Receipt {
     this.undoneBy = '',
     this.quiet = false,
     this.touched = const [],
+    this.affected = const [],
   });
 
   factory Receipt.fromJson(Map<String, dynamic> j) {
@@ -211,6 +215,7 @@ class Receipt {
       undoneBy: _str(j['undone_by']),
       quiet: _bool(j['quiet']),
       touched: _strs(j['touched']),
+      affected: _strs(j['affected']),
     );
   }
 
@@ -629,11 +634,17 @@ class Topic {
 class TopicPage {
   final Topic topic;
   final List<Note> notes;
+
+  /// Open, waiting and later tasks.
   final List<Task> tasks;
+
+  /// Completed tasks, most recently finished first.
+  final List<Task> doneTasks;
   const TopicPage({
     required this.topic,
     this.notes = const [],
     this.tasks = const [],
+    this.doneTasks = const [],
   });
   factory TopicPage.fromJson(Map<String, dynamic> j) => TopicPage(
     topic: Topic.fromJson((j['topic'] as Map<String, dynamic>?) ?? const {}),
@@ -645,6 +656,12 @@ class TopicPage {
         : const [],
     tasks: (j['tasks'] is List)
         ? (j['tasks'] as List)
+              .whereType<Map<String, dynamic>>()
+              .map(Task.fromJson)
+              .toList()
+        : const [],
+    doneTasks: (j['done_tasks'] is List)
+        ? (j['done_tasks'] as List)
               .whereType<Map<String, dynamic>>()
               .map(Task.fromJson)
               .toList()

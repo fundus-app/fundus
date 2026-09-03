@@ -17,6 +17,7 @@ enum AppView {
   topics,
   waiting,
   later,
+  done,
   changes,
   conversation,
 }
@@ -31,6 +32,7 @@ extension AppViewInfo on AppView {
     AppView.topics => 'Topics',
     AppView.waiting => 'Waiting',
     AppView.later => 'Later',
+    AppView.done => 'Done',
     AppView.changes => 'Changes',
     AppView.conversation => 'Conversation',
   };
@@ -46,6 +48,7 @@ extension AppViewInfo on AppView {
     AppView.topics => 'Hubs that notes and tasks link to. Fundus creates them when a subject recurs.',
     AppView.waiting => 'Tasks blocked on something external.',
     AppView.later => 'Deliberately deferred. No reminders, no guilt.',
+    AppView.done => 'Completed tasks, newest first. The checkbox reopens one.',
     AppView.changes => 'Every change, by you or the model, with undo.',
     AppView.conversation => 'Ask, recall, and file in natural language.',
   };
@@ -181,6 +184,7 @@ class AppState extends ChangeNotifier {
   bool searching = false;
 
   Timer? _refreshDebounce;
+  Timer? _detailDebounce;
   Timer? _healthTimer;
 
   @override
@@ -189,6 +193,7 @@ class AppState extends ChangeNotifier {
     _connSub?.cancel();
     _refreshDebounce?.cancel();
     _healthTimer?.cancel();
+    _detailDebounce?.cancel();
     refs.dispose();
     dictation.dispose();
     if (api is HttpFundusApi) (api as HttpFundusApi).close();
@@ -370,11 +375,15 @@ class AppState extends ChangeNotifier {
         for (final id in r.touched) {
           lastReceiptFor[id] = r;
         }
-        if (selectedId != null &&
-            (r.lines.any((l) => l.objectId == selectedId) ||
-                r.touched.contains(selectedId)) &&
-            r.causeKind != 'conversation') {
-          select(selectedId!, force: true);
+        // The open detail changed: it is in `touched`, or it is a topic in
+        // `affected` (its member list changed). Older daemons send neither
+        // for member changes, so any change that is not a pure conversation
+        // turn refetches the open detail as a fallback. One GET, debounced.
+        final direct =
+            selectedId != null &&
+            (r.touched.contains(selectedId) || r.affected.contains(selectedId));
+        if (direct || r.causeKind != 'conversation' || r.touched.isNotEmpty) {
+          _scheduleDetailRefresh();
         }
       case 'object.changed':
         final id = ev.payload['id'];
@@ -385,6 +394,10 @@ class AppState extends ChangeNotifier {
             detail = null;
             topicPage = null;
             notifyListeners();
+          } else if (id == selectedId || topicPage != null) {
+            // The open object changed (`members: true` when only its member
+            // list did), or a member of the open topic changed.
+            _scheduleDetailRefresh();
           }
         }
       case 'hello':
@@ -407,6 +420,16 @@ class AppState extends ChangeNotifier {
           })
           .catchError((_) {});
       _countAttention();
+    });
+  }
+
+  /// Refetches the open detail once, 250 ms after the last event.
+  void _scheduleDetailRefresh() {
+    if (selectedId == null) return;
+    _detailDebounce?.cancel();
+    _detailDebounce = Timer(const Duration(milliseconds: 250), () {
+      final id = selectedId;
+      if (id != null && removedNotice?.id != id) select(id, force: true);
     });
   }
 
@@ -448,6 +471,8 @@ class AppState extends ChangeNotifier {
           tasks = await api.tasks(states: const ['waiting']);
         case AppView.later:
           tasks = await api.tasks(states: const ['later']);
+        case AppView.done:
+          tasks = await api.tasks(states: const ['done']);
         case AppView.ideas:
           notes = await api.notes(kind: 'idea');
         case AppView.notes:
@@ -608,6 +633,17 @@ class AppState extends ChangeNotifier {
       {'op': 'topic.update', 'id': t.id, 'expected_rev': t.meta.rev, ...patch},
     ]);
     await select(t.id, force: true);
+    await refreshView();
+    return r;
+  }
+
+  /// "Delete" in the UI: archives the object (undoable; undo restores it).
+  /// The detail closes, lists refresh.
+  Future<Receipt> delete(String id, int rev) async {
+    final r = await api.commands([
+      {'op': 'object.archive', 'id': id, 'expected_rev': rev},
+    ]);
+    if (selectedId == id) clearSelection();
     await refreshView();
     return r;
   }

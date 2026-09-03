@@ -7,6 +7,7 @@ import '../../state/app_state.dart';
 import '../blocks/block_renderer.dart';
 import '../blocks/ref_labels.dart';
 import '../theme.dart';
+import '../views/list_views.dart' show deleteObject;
 import '../widgets/common.dart';
 
 /// The detail pane: read and directly edit the selected object.
@@ -117,9 +118,11 @@ class _Primer extends StatelessWidget {
                 children: [
                   const KeyHint('Ctrl K'),
                   const SizedBox(width: 8),
-                  Text(
-                    'captures a thought from any view.',
-                    style: theme.textTheme.bodySmall,
+                  Expanded(
+                    child: Text(
+                      'captures a thought from any view.',
+                      style: theme.textTheme.bodySmall,
+                    ),
                   ),
                 ],
               ),
@@ -297,10 +300,14 @@ class _Header extends StatelessWidget {
     required this.menu,
     required this.facts,
     this.strike = false,
+    this.leading,
   });
   final String title;
   final VoidCallback onEdit;
   final Widget? menu;
+
+  /// Sits left of the title, centred on its first line (the task checkbox).
+  final Widget? leading;
 
   /// Plain facts and links; joined with " · ".
   final List<TextPart> facts;
@@ -317,12 +324,20 @@ class _Header extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Row(
-          crossAxisAlignment: CrossAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (leading != null)
+              Padding(
+                // Centre a 22 px control on the first 26 px × 1.2 title line.
+                padding: const EdgeInsets.only(top: 5, right: 10),
+                child: leading,
+              ),
             Expanded(
               child: EditableTitle(
                 text: title,
                 style: theme.textTheme.headlineMedium!.copyWith(
+                  fontSize: 26,
+                  height: 1.2,
                   decoration: strike ? TextDecoration.lineThrough : null,
                 ),
                 onEdit: onEdit,
@@ -332,8 +347,11 @@ class _Header extends StatelessWidget {
           ],
         ),
         if (parts.isNotEmpty) ...[
-          const SizedBox(height: 4),
-          LinkedText(parts: parts, style: secondaryStyle(context)),
+          const SizedBox(height: 8),
+          Padding(
+            padding: EdgeInsets.only(left: leading == null ? 0 : 32),
+            child: LinkedText(parts: parts, style: secondaryStyle(context)),
+          ),
         ],
       ],
     );
@@ -341,7 +359,11 @@ class _Header extends StatelessWidget {
 }
 
 /// "in Fundus, Solar" as link parts for a header fact row.
-List<TextPart> _inTopics(List<LinkRef> topics, RefTap onOpen) {
+List<TextPart> _inTopics(
+  List<LinkRef> topics,
+  RefTap onOpen, {
+  void Function(LinkRef topic)? onUnlink,
+}) {
   if (topics.isEmpty) return const [];
   final parts = <TextPart>[const TextPart('in ')];
   for (var i = 0; i < topics.length; i++) {
@@ -352,6 +374,7 @@ List<TextPart> _inTopics(List<LinkRef> topics, RefTap onOpen) {
         t.title.isEmpty ? 'a topic' : t.title,
         onTap: () => onOpen(t.id),
         glue: true,
+        onRemove: onUnlink == null ? null : () => onUnlink(t),
       ),
     );
   }
@@ -802,16 +825,22 @@ class _NoteInspectorState extends State<NoteInspector> {
       case 'idea':
       case 'note':
         await _run(context, () => state.updateNote(n, {'kind': v}));
-      case 'archive':
-        final ok = await _confirm(
+      case 'link_topic':
+        final t = await _pickTopic(
           context,
-          'Archive this note?',
-          'It disappears from views but stays in the data and can be restored.',
-          action: 'Archive',
+          state,
+          exclude: widget.detail.topics.map((x) => x.id).toSet(),
+          title: 'Link to which topic?',
         );
-        if (ok && mounted) {
-          await _run(context, () => state.archive(n.id, n.meta.rev));
-        }
+        if (t == null || !mounted) return;
+        await _run(
+          context,
+          () => state.updateNote(n, {
+            'add_topics': [t.id],
+          }),
+        );
+      case 'delete':
+        await deleteObject(context, n.id, n.meta.rev, n.title);
       case 'unarchive':
         await _run(
           context,
@@ -847,22 +876,34 @@ class _NoteInspectorState extends State<NoteInspector> {
                   n.kind == 'idea' ? 'Make it a note' : 'Make it an idea',
                 ),
               ),
-              if (!n.meta.archived)
-                const PopupMenuItem(value: 'archive', child: Text('Archive')),
+              const PopupMenuItem(
+                value: 'link_topic',
+                child: Text('Link to topic…'),
+              ),
               if (n.meta.archived)
-                const PopupMenuItem(
-                  value: 'unarchive',
-                  child: Text('Unarchive'),
-                ),
+                const PopupMenuItem(value: 'unarchive', child: Text('Restore')),
               const PopupMenuDivider(),
               const PopupMenuItem(value: 'copy_id', child: Text('Copy ID')),
+              if (!n.meta.archived) ...[
+                const PopupMenuDivider(),
+                const PopupMenuItem(value: 'delete', child: Text('Delete')),
+              ],
             ],
           ),
           facts: [
             TextPart(n.kind == 'idea' ? 'Idea' : 'Note'),
-            if (n.meta.archived) const TextPart('archived'),
+            if (n.meta.archived) const TextPart('deleted'),
             TextPart(timeAgo(n.meta.updatedAt)),
-            ..._inTopics(widget.detail.topics, widget.onOpen),
+            ..._inTopics(
+              widget.detail.topics,
+              widget.onOpen,
+              onUnlink: (t) => _run(
+                context,
+                () => state.updateNote(n, {
+                  'remove_topics': [t.id],
+                }),
+              ),
+            ),
           ],
         ),
         const SizedBox(height: 18),
@@ -946,6 +987,61 @@ class TaskInspector extends StatelessWidget {
     await _run(context, () => state.updateTask(t, {'waiting_on': v.trim()}));
   }
 
+  /// State from the chip menu; "Waiting" asks whom or what for.
+  Future<void> _setState(
+    BuildContext context,
+    AppState state,
+    Task t,
+    String s,
+  ) async {
+    if (s == t.state) return;
+    if (s == 'waiting') {
+      final v = await _promptText(
+        context,
+        title: 'Waiting on',
+        initial: t.waitingOn,
+      );
+      if (!context.mounted) return;
+      await _run(
+        context,
+        () => state.updateTask(t, {
+          'state': 'waiting',
+          if (v != null && v.trim().isNotEmpty) 'waiting_on': v.trim(),
+        }),
+      );
+      return;
+    }
+    await _run(context, () => state.setTaskState(t, s));
+  }
+
+  Future<void> _menu(
+    BuildContext context,
+    AppState state,
+    Task t,
+    String v,
+  ) async {
+    switch (v) {
+      case 'link_topic':
+        final topic = await _pickTopic(
+          context,
+          state,
+          exclude: detail.topics.map((x) => x.id).toSet(),
+          title: 'Link to which topic?',
+        );
+        if (topic == null || !context.mounted) return;
+        await _run(
+          context,
+          () => state.updateTask(t, {
+            'add_topics': [topic.id],
+          }),
+        );
+      case 'copy_id':
+        await copyId(context, t.id);
+      case 'delete':
+        await deleteObject(context, t.id, t.meta.rev, t.text);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final t = detail.task!;
@@ -957,15 +1053,18 @@ class TaskInspector extends StatelessWidget {
         _Header(
           title: t.text,
           strike: t.state == 'done',
+          leading: _TaskCheck(task: t, size: 22, key: const Key('task-check')),
           onEdit: () => _editText(context, state, t),
           menu: PopupMenuButton<String>(
             tooltip: 'Task actions',
             icon: const Icon(Icons.more_horiz_rounded),
-            onSelected: (v) {
-              if (v == 'copy_id') copyId(context, t.id);
-            },
+            onSelected: (v) => _menu(context, state, t, v),
             itemBuilder: (_) => const [
+              PopupMenuItem(value: 'link_topic', child: Text('Link to topic…')),
+              PopupMenuDivider(),
               PopupMenuItem(value: 'copy_id', child: Text('Copy ID')),
+              PopupMenuDivider(),
+              PopupMenuItem(value: 'delete', child: Text('Delete')),
             ],
           ),
           facts: [
@@ -977,38 +1076,49 @@ class TaskInspector extends StatelessWidget {
             }),
             if (t.due.isNotEmpty) TextPart('due ${dueLabel(t.due)}'),
             if (t.due.isEmpty) TextPart('created ${timeAgo(t.meta.createdAt)}'),
-            ..._inTopics(detail.topics, onOpen),
+            ..._inTopics(
+              detail.topics,
+              onOpen,
+              onUnlink: (topic) => _run(
+                context,
+                () => state.updateTask(t, {
+                  'remove_topics': [topic.id],
+                }),
+              ),
+            ),
           ],
         ),
-        const SizedBox(height: 14),
-        SegmentedButton<String>(
-          segments: const [
-            ButtonSegment(value: 'open', label: Text('Open')),
-            ButtonSegment(value: 'waiting', label: Text('Waiting')),
-            ButtonSegment(value: 'later', label: Text('Later')),
-            ButtonSegment(value: 'done', label: Text('Done')),
-          ],
-          selected: {t.state},
-          showSelectedIcon: false,
-          style: ButtonStyle(
-            visualDensity: VisualDensity.compact,
-            minimumSize: const WidgetStatePropertyAll(Size(0, 36)),
-            fixedSize: const WidgetStatePropertyAll(Size.fromHeight(36)),
-            textStyle: WidgetStatePropertyAll(
-              theme.textTheme.labelMedium!.copyWith(fontSize: 13),
-            ),
-            padding: const WidgetStatePropertyAll(
-              EdgeInsets.symmetric(horizontal: 12),
-            ),
-          ),
-          onSelectionChanged: (s) =>
-              _run(context, () => state.setTaskState(t, s.first)),
-        ),
-        const SectionLabel('Details'),
+        const SectionLabel('Details', top: 20),
         Wrap(
           spacing: 8,
           runSpacing: 8,
           children: [
+            PopupMenuButton<String>(
+              key: const Key('task-state'),
+              tooltip: 'State',
+              onSelected: (v) => _setState(context, state, t, v),
+              itemBuilder: (_) => const [
+                PopupMenuItem(value: 'open', child: Text('Open')),
+                PopupMenuItem(value: 'waiting', child: Text('Waiting')),
+                PopupMenuItem(value: 'later', child: Text('Later')),
+                PopupMenuItem(value: 'done', child: Text('Done')),
+              ],
+              child: DetailChip(
+                icon: switch (t.state) {
+                  'waiting' => Icons.hourglass_empty_rounded,
+                  'later' => Icons.snooze_outlined,
+                  'done' => Icons.check_circle_outline_rounded,
+                  _ => Icons.circle_outlined,
+                },
+                label: switch (t.state) {
+                  'waiting' => 'Waiting',
+                  'later' => 'Later',
+                  'done' => 'Done',
+                  _ => 'Open',
+                },
+                caret: true,
+              ),
+            ),
             DetailChip(
               icon: Icons.event_rounded,
               label: t.due.isEmpty ? 'Add due date' : 'Due ${dueLabel(t.due)}',
@@ -1132,7 +1242,7 @@ class _TopicInspectorState extends State<TopicInspector> {
             .toList();
         await _run(context, () => state.updateTopic(t, {'aliases': aliases}));
       case 'merge':
-        final survivor = await _pickTopic(context, state, exclude: t.id);
+        final survivor = await _pickTopic(context, state, exclude: {t.id});
         if (survivor == null || !mounted) return;
         final ok = await _confirm(
           context,
@@ -1147,20 +1257,16 @@ class _TopicInspectorState extends State<TopicInspector> {
       case 'person':
       case 'project':
         await _run(context, () => state.updateTopic(t, {'kind': v}));
-      case 'archive':
-        final ok = await _confirm(
-          context,
-          'Archive this topic?',
-          'Links from notes and tasks are kept; the topic disappears from lists.',
-          action: 'Archive',
-        );
-        if (ok && mounted) {
-          await _run(context, () => state.archive(t.id, t.meta.rev));
-        }
+      case 'delete':
+        // Notes and tasks keep their content; only the topic goes.
+        await deleteObject(context, t.id, t.meta.rev, t.name);
       case 'copy_id':
         await copyId(context, t.id);
     }
   }
+
+  /// Which topics' "Done" sections are open, for this run of the app.
+  static final _doneOpen = <String>{};
 
   @override
   Widget build(BuildContext context) {
@@ -1202,9 +1308,10 @@ class _TopicInspectorState extends State<TopicInspector> {
                   value: 'project',
                   child: Text('Mark as project'),
                 ),
-              const PopupMenuItem(value: 'archive', child: Text('Archive')),
               const PopupMenuDivider(),
               const PopupMenuItem(value: 'copy_id', child: Text('Copy ID')),
+              const PopupMenuDivider(),
+              const PopupMenuItem(value: 'delete', child: Text('Delete')),
             ],
           ),
           facts: [
@@ -1279,6 +1386,28 @@ class _TopicInspectorState extends State<TopicInspector> {
                     }, style: secondaryStyle(context)),
               onTap: () => widget.onOpen(task.id),
             ),
+          if (page.doneTasks.isNotEmpty) ...[
+            SectionLabel(
+              'Done',
+              count: page.doneTasks.length,
+              key: const Key('topic-done'),
+              collapsed: !_doneOpen.contains(t.id),
+              onTap: () => setState(() {
+                if (!_doneOpen.add(t.id)) _doneOpen.remove(t.id);
+              }),
+            ),
+            if (_doneOpen.contains(t.id))
+              for (final task in page.doneTasks)
+                ListRow(
+                  leading: _TaskCheck(task: task),
+                  title: task.text,
+                  strike: true,
+                  secondary: task.completedAt == null
+                      ? null
+                      : 'done ${timeAgo(task.completedAt)}',
+                  onTap: () => widget.onOpen(task.id),
+                ),
+          ],
         ],
         _History(receipts: widget.detail.receipts, onOpen: widget.onOpen),
       ],
@@ -1290,7 +1419,8 @@ class _TopicInspectorState extends State<TopicInspector> {
 Future<Topic?> _pickTopic(
   BuildContext context,
   AppState state, {
-  required String exclude,
+  required Set<String> exclude,
+  String title = 'Merge into which topic?',
 }) async {
   List<Topic> all;
   try {
@@ -1307,7 +1437,7 @@ Future<Topic?> _pickTopic(
       builder: (ctx, setState) {
         final q = filter.text.trim().toLowerCase();
         final items = all
-            .where((t) => t.id != exclude && !t.meta.archived)
+            .where((t) => !exclude.contains(t.id) && !t.meta.archived)
             .where(
               (t) =>
                   q.isEmpty ||
@@ -1316,7 +1446,7 @@ Future<Topic?> _pickTopic(
             )
             .toList();
         return AlertDialog(
-          title: const Text('Merge into which topic?'),
+          title: Text(title),
           content: SizedBox(
             width: 460,
             height: 380,
@@ -1702,8 +1832,9 @@ class _ResultView extends StatelessWidget {
 
 /// The round task checkbox: tapping toggles done.
 class _TaskCheck extends StatelessWidget {
-  const _TaskCheck({required this.task});
+  const _TaskCheck({super.key, required this.task, this.size = 18});
   final Task task;
+  final double size;
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -1720,7 +1851,7 @@ class _TaskCheck extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         child: Icon(
           done ? Icons.check_circle_rounded : Icons.circle_outlined,
-          size: 18,
+          size: size,
           color: done ? scheme.success : scheme.outline,
         ),
       ),
@@ -1739,6 +1870,7 @@ class DetailChip extends StatefulWidget {
     this.filled = false,
     this.onTap,
     this.onClear,
+    this.caret = false,
   });
   final IconData icon;
   final String label;
@@ -1746,6 +1878,9 @@ class DetailChip extends StatefulWidget {
   final bool filled;
   final VoidCallback? onTap;
   final VoidCallback? onClear;
+
+  /// Shows a ▾: the chip opens a menu.
+  final bool caret;
   @override
   State<DetailChip> createState() => _DetailChipState();
 }
@@ -1788,6 +1923,8 @@ class _DetailChipState extends State<DetailChip> {
                   widget.label,
                   style: theme.textTheme.labelMedium!.copyWith(color: fg),
                 ),
+                if (widget.caret)
+                  Icon(Icons.arrow_drop_down_rounded, size: 16, color: fg),
                 if (widget.onClear != null)
                   AnimatedOpacity(
                     opacity: _hover ? 1 : 0,

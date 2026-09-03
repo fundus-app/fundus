@@ -19,12 +19,13 @@ const _views = AppView.values;
 IconData _iconFor(AppView v) => switch (v) {
   AppView.inbox => Icons.inbox_outlined,
   AppView.relevant => Icons.bolt_outlined,
-  AppView.open => Icons.check_circle_outline_rounded,
+  AppView.open => Icons.circle_outlined,
   AppView.ideas => Icons.lightbulb_outline_rounded,
   AppView.notes => Icons.notes_rounded,
   AppView.topics => Icons.tag_rounded,
   AppView.waiting => Icons.hourglass_empty_rounded,
   AppView.later => Icons.snooze_outlined,
+  AppView.done => Icons.check_circle_outline_rounded,
   AppView.changes => Icons.history_rounded,
   AppView.conversation => Icons.forum_outlined,
 };
@@ -768,6 +769,7 @@ class _ListPane extends StatelessWidget {
           emptyHint:
               'Push a task to “later” and it rests here without nagging.',
         ),
+        AppView.done => DoneList(tasks: state.tasks, onOpen: onOpen),
         AppView.ideas => NoteList(
           notes: state.notes,
           onOpen: onOpen,
@@ -788,7 +790,8 @@ class _ListPane extends StatelessWidget {
       AppView.relevant ||
       AppView.open ||
       AppView.waiting ||
-      AppView.later => state.tasks.length,
+      AppView.later ||
+      AppView.done => state.tasks.length,
       AppView.ideas || AppView.notes => state.notes.length,
       AppView.topics => state.topics.length,
       AppView.changes => state.changes.length,

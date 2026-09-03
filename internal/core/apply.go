@@ -22,7 +22,10 @@ type workspace struct {
 	created map[string]bool
 	before  map[string]json.RawMessage
 	touched []string
-	now     time.Time
+	// affected: topics whose membership changed in this transaction (see
+	// model.Txn.Affected).
+	affected []string
+	now      time.Time
 	// replay skips validation whose outcome depends on tunables (name
 	// normalization, size limits): what was committed once stays valid.
 	replay bool
@@ -45,6 +48,27 @@ func (w *workspace) get(id string) (model.Object, bool) {
 }
 
 // touch records the before-image of id exactly once.
+// affect records topics whose member lists changed so that their pages can
+// be refreshed, without treating the topics as written (no before-image, no
+// undo conflict).
+func (w *workspace) affect(topics ...string) {
+	for _, t := range topics {
+		if t == "" {
+			continue
+		}
+		dup := false
+		for _, a := range w.affected {
+			if a == t {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			w.affected = append(w.affected, t)
+		}
+	}
+}
+
 func (w *workspace) touch(id string) {
 	if _, seen := w.before[id]; seen {
 		return
@@ -257,6 +281,7 @@ func (w *workspace) apply(op *model.Op, txn *model.Txn) error {
 		}
 		n := &model.Note{Meta: model.Meta{ID: op.ID, Type: model.TypeNote}, Kind: kind, NoteTitle: title, Body: body,
 			Topics: dedupe(op.Topics), Origins: dedupe(op.Origins)}
+		w.affect(n.Topics...)
 		return w.create(n)
 
 	case "note.revise":
@@ -341,6 +366,8 @@ func (w *workspace) apply(op *model.Op, txn *model.Txn) error {
 		}
 		n.Topics = dedupe(append(n.Topics, op.AddTopics...))
 		n.Topics = without(n.Topics, op.RemoveTopics)
+		w.affect(op.AddTopics...)
+		w.affect(op.RemoveTopics...)
 		for _, r := range op.AddRelated {
 			if r == n.ID {
 				continue
@@ -373,6 +400,7 @@ func (w *workspace) apply(op *model.Op, txn *model.Txn) error {
 		}
 		t := &model.Task{Meta: model.Meta{ID: op.ID, Type: model.TypeTask}, Text: text, State: model.TaskOpen,
 			Topics: dedupe(op.Topics), Origins: dedupe(op.Origins)}
+		w.affect(t.Topics...)
 		if op.State != "" {
 			if err := validTaskState(op.State); err != nil {
 				return err
@@ -427,6 +455,8 @@ func (w *workspace) apply(op *model.Op, txn *model.Txn) error {
 			return err
 		}
 		t.Topics = without(dedupe(append(t.Topics, op.AddTopics...)), op.RemoveTopics)
+		w.affect(op.AddTopics...)
+		w.affect(op.RemoveTopics...)
 		for _, nid := range op.AddNotes {
 			if _, ok := w.get(nid); !ok || ids.Prefix(nid) != ids.PrefixNote {
 				return fmt.Errorf("%w: note %s", ErrNotFound, nid)

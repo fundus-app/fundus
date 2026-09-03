@@ -112,6 +112,10 @@ type Txn struct {
 	Before map[string]json.RawMessage `json:"before"`
 	// Touched lists touched object ids in order of first touch.
 	Touched []string `json:"touched"`
+	// Affected lists objects whose own record did not change but whose view
+	// did: topics that gained or lost members. Clients refresh those pages;
+	// undo ignores them because nothing was written to them.
+	Affected []string `json:"affected,omitempty"`
 	// Summary and Lines are the human receipt, stored so the audit view shows
 	// what was said at the time, not a re-rendering against later state.
 	Summary string        `json:"summary,omitempty"`
@@ -140,6 +144,7 @@ type Receipt struct {
 	Lines    []ReceiptLine `json:"lines"`
 	Summary  string        `json:"summary"`
 	Touched  []string      `json:"touched,omitempty"`
+	Affected []string      `json:"affected,omitempty"`
 	Undoable bool          `json:"undoable"`
 	UndoOf   string        `json:"undo_of,omitempty"`
 	UndoneBy string        `json:"undone_by,omitempty"`

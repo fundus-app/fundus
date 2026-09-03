@@ -469,7 +469,9 @@ class TaskRow extends StatelessWidget {
       trailing: PopupMenuButton<String>(
         tooltip: 'Task actions',
         icon: const Icon(Icons.more_horiz_rounded, size: 18),
-        onSelected: (s) => _setState(context, s),
+        onSelected: (s) => s == 'delete'
+            ? deleteObject(context, task.id, task.meta.rev, task.text)
+            : _setState(context, s),
         itemBuilder: (_) => [
           if (task.state != 'open')
             const PopupMenuItem(value: 'open', child: Text('Reopen')),
@@ -479,6 +481,8 @@ class TaskRow extends StatelessWidget {
             const PopupMenuItem(value: 'later', child: Text('Later')),
           if (task.state != 'waiting')
             const PopupMenuItem(value: 'waiting', child: Text('Waiting')),
+          const PopupMenuDivider(),
+          const PopupMenuItem(value: 'delete', child: Text('Delete')),
         ],
       ),
       child: Column(
@@ -557,6 +561,135 @@ class _Meta extends StatelessWidget {
         const SizedBox(width: 3),
         Text(text, style: t.copyWith(color: c)),
       ],
+    );
+  }
+}
+
+/// Completed tasks, newest first, grouped by the day they were finished.
+class DoneList extends StatelessWidget {
+  const DoneList({super.key, required this.tasks, required this.onOpen});
+  final List<Task> tasks;
+  final RefTap onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    if (tasks.isEmpty) {
+      return const EmptyState(
+        icon: Icons.check_circle_outline_rounded,
+        title: 'Nothing completed yet.',
+        hint: 'Finished tasks land here, newest first.',
+      );
+    }
+    final state = context.watch<AppState>();
+    final theme = Theme.of(context);
+    final sorted = [...tasks]
+      ..sort((a, b) {
+        final x = a.completedAt ?? a.meta.updatedAt ?? DateTime(0);
+        final y = b.completedAt ?? b.meta.updatedAt ?? DateTime(0);
+        return y.compareTo(x);
+      });
+    final items = <Widget>[];
+    String? day;
+    for (final t in sorted) {
+      final when = t.completedAt ?? t.meta.updatedAt;
+      final label = dayLabel(when);
+      if (label != day) {
+        day = label;
+        items.add(
+          Padding(
+            padding: EdgeInsets.fromLTRB(4, items.isEmpty ? 4 : 18, 4, 6),
+            child: Text(
+              label.isEmpty ? 'Earlier' : label,
+              style: theme.textTheme.labelSmall!.copyWith(
+                fontSize: 11,
+                letterSpacing: 1.2,
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        );
+      }
+      items.add(
+        _DoneRow(task: t, selected: state.selectedId == t.id, onOpen: onOpen),
+      );
+    }
+    return ListView(
+      padding: const EdgeInsets.only(bottom: 24),
+      children: items,
+    );
+  }
+}
+
+class _DoneRow extends StatelessWidget {
+  const _DoneRow({
+    required this.task,
+    required this.selected,
+    required this.onOpen,
+  });
+  final Task task;
+  final bool selected;
+  final RefTap onOpen;
+
+  Future<void> _reopen(BuildContext context) async {
+    final state = context.read<AppState>();
+    try {
+      final r = await state.setTaskState(task, 'open');
+      if (context.mounted) {
+        showReceiptSnack(
+          context,
+          r,
+          onUndo: () => undoWithConfirm(context, state, r.txnId),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) showError(context, e);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final meta = [
+      if (task.topicNames.isNotEmpty) 'in ${task.topicNames.join(', ')}',
+      if (task.completedAt != null) shortTime(task.completedAt),
+    ].join(' · ');
+    return _Row(
+      selected: selected,
+      onTap: () => onOpen(task.id),
+      leading: Semantics(
+        label: 'Reopen task',
+        button: true,
+        child: SizedBox(
+          width: 32,
+          height: 32,
+          child: InkWell(
+            key: Key('reopen-${task.id}'),
+            onTap: () => _reopen(context),
+            borderRadius: BorderRadius.circular(16),
+            child: Icon(
+              Icons.check_circle_rounded,
+              size: 20,
+              color: scheme.success,
+            ),
+          ),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            task.text,
+            style: theme.textTheme.bodyMedium!.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+          if (meta.isNotEmpty) ...[
+            const SizedBox(height: 2),
+            Text(meta, style: theme.textTheme.labelSmall),
+          ],
+        ],
+      ),
     );
   }
 }
@@ -760,10 +893,11 @@ class SearchResults extends StatelessWidget {
       itemCount: hits.length,
       itemBuilder: (context, i) {
         final h = hits[i];
+        final done = h.state == 'done';
         final meta = [
           h.type,
           if (h.kind.isNotEmpty) h.kind,
-          if (h.state.isNotEmpty) h.state,
+          if (h.state.isNotEmpty && !done) h.state,
         ].join(' · ');
         return _Row(
           selected: false,
@@ -776,7 +910,32 @@ class SearchResults extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(h.title, style: theme.textTheme.titleSmall),
+              Row(
+                children: [
+                  Flexible(
+                    child: Text(
+                      h.title,
+                      style: theme.textTheme.titleSmall!.copyWith(
+                        color: done ? theme.colorScheme.onSurfaceVariant : null,
+                      ),
+                    ),
+                  ),
+                  if (done) ...[
+                    const SizedBox(width: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 1,
+                      ),
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.surfaceContainerHigh,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text('done', style: theme.textTheme.labelSmall),
+                    ),
+                  ],
+                ],
+              ),
               if (h.preview.isNotEmpty)
                 Text(
                   h.preview,
@@ -889,5 +1048,27 @@ class _ParkedHeader extends StatelessWidget {
         ],
       ],
     );
+  }
+}
+
+/// "Delete" from a menu: archives the object (undoable), closes its detail,
+/// refreshes the lists and offers Undo in a toast. No confirmation dialog.
+Future<void> deleteObject(
+  BuildContext context,
+  String id,
+  int rev,
+  String title,
+) async {
+  final state = context.read<AppState>();
+  try {
+    final r = await state.delete(id, rev);
+    if (!context.mounted) return;
+    showUndoSnack(
+      context,
+      'Deleted “$title”',
+      onUndo: () => undoWithConfirm(context, state, r.txnId),
+    );
+  } catch (e) {
+    if (context.mounted) showError(context, e);
   }
 }

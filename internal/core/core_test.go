@@ -522,3 +522,102 @@ func TestModelCannotReplaceUserSummaryBlock(t *testing.T) {
 		t.Fatalf("model append should work: %v", err)
 	}
 }
+
+func TestAffectedTopicsOnMembershipChange(t *testing.T) {
+	c := openTest(t, t.TempDir())
+	rec, err := c.Commit(context.Background(), "user:test", nil, []model.Op{{Op: "topic.create", Name: str("Fundus")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	topicID := rec.Lines[0].ObjectID
+	// Creating a note inside the topic affects the topic without touching it.
+	rec, err = c.Commit(context.Background(), "user:test", nil, []model.Op{{Op: "note.create", Title: str("Plan"), Markdown: "x", Topics: []string{topicID}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	noteID := rec.Lines[0].ObjectID
+	if len(rec.Affected) != 1 || rec.Affected[0] != topicID {
+		t.Fatalf("affected after create: %v", rec.Affected)
+	}
+	for _, id := range rec.Touched {
+		if id == topicID {
+			t.Fatal("the topic must not count as touched (no undo conflict, no before-image)")
+		}
+	}
+	// Linking an existing task affects the topic as well; unlinking too.
+	rec, _ = c.Commit(context.Background(), "user:test", nil, []model.Op{{Op: "task.create", Text: "Ship it"}})
+	taskID := rec.Lines[0].ObjectID
+	rec, err = c.Commit(context.Background(), "llm:triage/test", nil, []model.Op{{Op: "task.update", ID: taskID, AddTopics: []string{topicID}}})
+	if err != nil || len(rec.Affected) != 1 || rec.Affected[0] != topicID {
+		t.Fatalf("affected after link: %v %v", err, rec.Affected)
+	}
+	rec, err = c.Commit(context.Background(), "user:test", nil, []model.Op{{Op: "note.update", ID: noteID, RemoveTopics: []string{topicID}}})
+	if err != nil || len(rec.Affected) != 1 {
+		t.Fatalf("affected after unlink: %v %v", err, rec.Affected)
+	}
+	// Editing the topic itself puts it in Touched, not in Affected.
+	rec, err = c.Commit(context.Background(), "user:test", nil, []model.Op{{Op: "topic.set_summary", ID: topicID, Markdown: "About Fundus."}})
+	if err != nil || len(rec.Affected) != 0 || len(rec.Touched) != 1 {
+		t.Fatalf("summary edit: %v affected=%v touched=%v", err, rec.Affected, rec.Touched)
+	}
+	// Stored receipts carry it too.
+	found := false
+	for _, r := range c.ReceiptsForObject(taskID, 10) {
+		if len(r.Affected) == 1 && r.Affected[0] == topicID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("stored receipt lost affected")
+	}
+}
+
+func TestRemoveGuardsDoneOrderAndTopicPageSplit(t *testing.T) {
+	c := openTest(t, t.TempDir())
+	topicID, noteID, taskID, capID := seed(t, c)
+	// Models may not delete (archive); object.remove stays reserved for undo.
+	if _, err := c.Commit(context.Background(), "llm:triage/test", nil, []model.Op{{Op: "object.archive", ID: noteID}}); err == nil {
+		t.Fatal("model archive accepted")
+	}
+	if _, err := c.Commit(context.Background(), "user:test", nil, []model.Op{{Op: "object.remove", ID: noteID}}); err == nil {
+		t.Fatal("user remove accepted")
+	}
+	_ = capID
+	// A second task, completed later, sorts first in the done list; the
+	// topic page splits done tasks away from the live ones.
+	rec := mustCommit(t, c, "user:test", model.Op{Op: "task.create", Text: "Second", Topics: []string{topicID}})
+	task2 := rec.Lines[0].ObjectID
+	mustCommit(t, c, "user:test", model.Op{Op: "task.update", ID: taskID, State: "done"})
+	mustCommit(t, c, "user:test", model.Op{Op: "task.update", ID: task2, State: "done"})
+	done := c.Tasks([]model.TaskState{model.TaskDone}, false)
+	if len(done) != 2 || done[0].ID != task2 {
+		t.Fatalf("done order: %v", []string{done[0].ID, done[1].ID})
+	}
+	page, err := c.Topic(topicID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Tasks) != 0 || len(page.DoneTasks) != 2 || page.DoneTasks[0].ID != task2 {
+		t.Fatalf("topic page split: tasks=%d done=%d", len(page.Tasks), len(page.DoneTasks))
+	}
+	// A user deletes a note: it leaves the views and the receipt says so;
+	// undo brings it back.
+	rec = mustCommit(t, c, "user:test", model.Op{Op: "object.archive", ID: noteID})
+	if !strings.Contains(rec.Summary, "Deleted note") {
+		t.Fatalf("receipt: %s", rec.Summary)
+	}
+	for _, n := range c.Notes("", false) {
+		if n.ID == noteID {
+			t.Fatal("deleted note still listed")
+		}
+	}
+	if page, _ := c.Topic(topicID); len(page.Notes) != 0 {
+		t.Fatal("deleted note still on the topic page")
+	}
+	if _, err := c.Undo(context.Background(), "user:test", rec.TxnID, false); err != nil {
+		t.Fatal(err)
+	}
+	if obj, _ := c.Get(noteID); obj == nil || obj.GetMeta().Archived {
+		t.Fatal("undo did not restore the note")
+	}
+}

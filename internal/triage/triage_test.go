@@ -468,3 +468,53 @@ func TestMentionsName(t *testing.T) {
 		}
 	}
 }
+
+func TestUnrelatedExistingTopicIsDropped(t *testing.T) {
+	c := newCore(t)
+	rec, _ := c.Commit(context.Background(), "user:test", nil, []model.Op{
+		{Op: "topic.create", Name: str("RPG mit Godot Engine"), Kind: "project", Aliases: []string{"godot"}},
+		{Op: "topic.create", Name: str("Solaranlage"), Aliases: []string{"PV"}},
+		{Op: "topic.create", Name: str("Heizung")},
+	})
+	rpg, solar, heizung := rec.Lines[0].ObjectID, rec.Lines[1].ObjectID, rec.Lines[2].ObjectID
+	cases := []struct {
+		text, title string
+		topic       string
+		keep        bool
+	}{
+		{"Die UI Updates klappen noch nicht richtig.", "UI-Updates", rpg, false},
+		{"Godot Shader für das Inventar bauen.", "Inventar-Shader", rpg, true},
+		{"PV läuft wieder, war Schnee.", "PV wieder da", solar, true},
+		{"Heizungsdaten mit Grafana visualisieren.", "Grafana Heizung", heizung, true},
+		{"Zahnarzt anrufen.", "Zahnarzt", solar, false},
+	}
+	for _, tc := range cases {
+		capID := capture(t, c, tc.text)
+		res := result(Result{Classification: "note", Confidence: 0.9, Summary: "x", Operations: []Operation{
+			{Op: "note.create", Kind: "note", Title: tc.title, Markdown: tc.text, Topics: []string{tc.topic}},
+		}})
+		out, err := triager(c, scripted(res, res)).Process(context.Background(), capID)
+		if err != nil {
+			t.Fatalf("%q: %v", tc.text, err)
+		}
+		linked := strings.Contains(out.Summary, " in ")
+		if linked != tc.keep {
+			t.Errorf("%q: linked=%v want %v (%s)", tc.text, linked, tc.keep, out.Summary)
+		}
+	}
+	// A link op to an unrelated topic is dropped without failing the plan.
+	rec, _ = c.Commit(context.Background(), "user:test", nil, []model.Op{{Op: "task.create", Text: "Steuer machen"}})
+	taskID := rec.Lines[0].ObjectID
+	capID := capture(t, c, "Steuer machen nicht vergessen.")
+	res := result(Result{Classification: "task", Confidence: 0.9, Summary: "x", Operations: []Operation{
+		{Op: "task.mention", TaskID: taskID},
+		{Op: "link", TaskID: taskID, Topics: []string{rpg}},
+	}})
+	if _, err := triager(c, scripted(res, res)).Process(context.Background(), capID); err != nil {
+		t.Fatal(err)
+	}
+	obj, _ := c.Get(taskID)
+	if len(obj.(*model.Task).Topics) != 0 {
+		t.Fatal("unrelated link applied")
+	}
+}

@@ -43,6 +43,8 @@ class FakeApi implements FundusApi {
         txnId: 'txn_1',
         actor: 'llm:triage/fake/heuristic',
         summary: 'Created task "x". No due date.',
+        touched: ['task_1'],
+        affected: ['topic_1'],
       ),
     ],
   );
@@ -291,37 +293,80 @@ class FakeApi implements FundusApi {
 
   @override
   Future<Stats> stats() async => const Stats();
+
+  /// Object types by id (default note); ids requested via object()/topic().
+  final objectTypes = <String, String>{};
+  final objectRequests = <String>[];
+  final topicRequests = <String>[];
+
+  /// Full details to serve from object(), by id (falls back to a bare note).
+  final objectDetails = <String, ObjectDetail>{};
+
+  /// Tasks by state served from tasks(); topics from topics(); topic pages
+  /// by id; search hits.
+  final taskLists = <String, List<Task>>{};
+  final topicList = <Topic>[];
+  final topicPages = <String, TopicPage>{};
+  final searchHits = <SearchHit>[];
+  final tasksRequested = <List<String>>[];
   @override
-  Future<ObjectDetail> object(String id) async => ObjectDetail(
-    meta: Meta(id: id, type: 'note'),
-    raw: const {},
-  );
+  Future<ObjectDetail> object(String id) async {
+    objectRequests.add(id);
+    final known = objectDetails[id];
+    if (known != null) return known;
+    final type = objectTypes[id] ?? 'note';
+    return ObjectDetail(
+      meta: Meta(id: id, type: type),
+      raw: const {},
+    );
+  }
+
   @override
   Future<List<Note>> notes({String kind = ''}) async => [];
   @override
-  Future<List<Task>> tasks({List<String> states = const []}) async => [];
+  Future<List<Task>> tasks({List<String> states = const []}) async {
+    tasksRequested.add(states);
+    return [for (final s in states) ...?taskLists[s]];
+  }
+
   @override
   Future<List<Task>> relevant({int limit = 15}) async => [];
   @override
-  Future<List<Topic>> topics() async => [];
+  Future<List<Topic>> topics() async => topicList;
   @override
-  Future<TopicPage> topic(String id) async => TopicPage(
-    topic: Topic(
-      meta: Meta(id: id, type: 'topic'),
-      kind: 'topic',
-      name: 'T',
-    ),
-  );
+  Future<TopicPage> topic(String id) async {
+    topicRequests.add(id);
+    return topicPages[id] ??
+        TopicPage(
+          topic: Topic(
+            meta: Meta(id: id, type: 'topic'),
+            kind: 'topic',
+            name: 'T',
+          ),
+        );
+  }
+
   @override
-  Future<List<SearchHit>> search(String query, {int limit = 20}) async => [];
+  Future<List<SearchHit>> search(String query, {int limit = 20}) async =>
+      searchHits;
   @override
   Future<List<Receipt>> changes({int limit = 50, bool all = false}) async => [];
+
+  /// Every op sent through commands(), and every undone txn.
+  final ops = <Map<String, dynamic>>[];
+  final undone = <String>[];
   @override
-  Future<Receipt> undo(String txnId, {bool force = false}) async =>
-      Receipt(txnId: 'txn_u', undoOf: txnId, summary: 'Undid.');
+  Future<Receipt> undo(String txnId, {bool force = false}) async {
+    undone.add(txnId);
+    return Receipt(txnId: 'txn_u', undoOf: txnId, summary: 'Restored.');
+  }
+
   @override
-  Future<Receipt> commands(List<Map<String, dynamic>> ops) async =>
-      const Receipt(txnId: 'txn_c', summary: 'ok');
+  Future<Receipt> commands(List<Map<String, dynamic>> ops) async {
+    this.ops.addAll(ops);
+    return Receipt(txnId: 'txn_c${this.ops.length}', summary: 'ok');
+  }
+
   @override
   Future<List<ConversationSummary>> conversations() async => [];
   @override

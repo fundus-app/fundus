@@ -161,6 +161,23 @@ void showReceiptSnack(
   );
 }
 
+/// A plain toast with an Undo action (used for deletes).
+void showUndoSnack(
+  BuildContext context,
+  String text, {
+  required VoidCallback onUndo,
+}) {
+  final messenger = ScaffoldMessenger.maybeOf(context);
+  messenger?.hideCurrentSnackBar();
+  messenger?.showSnackBar(
+    SnackBar(
+      content: Text(text, maxLines: 2, overflow: TextOverflow.ellipsis),
+      action: SnackBarAction(label: 'Undo', onPressed: onUndo),
+      duration: const Duration(seconds: 6),
+    ),
+  );
+}
+
 /// Undo with the conflict dialog (409 undo_conflict → offer force).
 Future<Receipt?> undoWithConfirm(
   BuildContext context,
@@ -336,10 +353,25 @@ class ErrorState extends StatelessWidget {
 
 /// Section label: "Notes · 1" in small caps with a hairline under it.
 class SectionLabel extends StatelessWidget {
-  const SectionLabel(this.text, {super.key, this.count, this.trailing});
+  const SectionLabel(
+    this.text, {
+    super.key,
+    this.count,
+    this.trailing,
+    this.top = 28,
+    this.onTap,
+    this.collapsed = false,
+  });
   final String text;
   final int? count;
   final Widget? trailing;
+
+  /// Space above the label.
+  final double top;
+
+  /// Makes the label a toggle with a chevron (collapsible section).
+  final VoidCallback? onTap;
+  final bool collapsed;
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -348,22 +380,41 @@ class SectionLabel extends StatelessWidget {
       letterSpacing: 1.2,
       color: scheme.onSurfaceVariant,
     );
+    final row = Row(
+      children: [
+        if (onTap != null)
+          Padding(
+            padding: const EdgeInsets.only(right: 2),
+            child: Icon(
+              collapsed
+                  ? Icons.chevron_right_rounded
+                  : Icons.expand_more_rounded,
+              size: 16,
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+        Expanded(
+          child: Text(
+            (count == null ? text : '$text · $count').toUpperCase(),
+            style: style,
+          ),
+        ),
+        ?trailing,
+      ],
+    );
     return Padding(
-      padding: const EdgeInsets.only(top: 28, bottom: 8),
+      padding: EdgeInsets.only(top: top, bottom: 8),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  (count == null ? text : '$text · $count').toUpperCase(),
-                  style: style,
-                ),
-              ),
-              ?trailing,
-            ],
-          ),
+          if (onTap == null)
+            row
+          else
+            InkWell(
+              onTap: onTap,
+              borderRadius: BorderRadius.circular(4),
+              child: row,
+            ),
           const SizedBox(height: 6),
           Divider(height: 1, thickness: 1, color: scheme.outlineVariant),
         ],
@@ -511,12 +562,15 @@ class LinkedText extends StatefulWidget {
 }
 
 class TextPart {
-  const TextPart(this.text, {this.onTap, this.glue = false});
+  const TextPart(this.text, {this.onTap, this.glue = false, this.onRemove});
   final String text;
   final VoidCallback? onTap;
 
   /// Attach to the previous part without a separator (used by fact rows).
   final bool glue;
+
+  /// A link that can be taken away: a small × follows it on hover.
+  final VoidCallback? onRemove;
   bool get isLink => onTap != null;
 }
 
@@ -561,6 +615,36 @@ class _LinkedTextState extends State<LinkedText> {
           onExit: (_) => setState(() => _hovered = null),
         ),
       );
+      if (p.onRemove != null) {
+        spans.add(
+          WidgetSpan(
+            alignment: PlaceholderAlignment.middle,
+            child: MouseRegion(
+              onEnter: (_) => setState(() => _hovered = i),
+              onExit: (_) => setState(() => _hovered = null),
+              child: AnimatedOpacity(
+                opacity: _hovered == i ? 1 : 0,
+                duration: const Duration(milliseconds: 120),
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 2),
+                  child: InkWell(
+                    onTap: p.onRemove,
+                    borderRadius: BorderRadius.circular(8),
+                    child: Tooltip(
+                      message: 'Unlink',
+                      child: Icon(
+                        Icons.close_rounded,
+                        size: 13,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      }
     }
     return Text.rich(TextSpan(style: base, children: spans));
   }

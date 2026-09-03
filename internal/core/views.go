@@ -35,7 +35,10 @@ type TopicView struct {
 type TopicPage struct {
 	Topic *model.Topic `json:"topic"`
 	Notes []NoteView   `json:"notes"`
-	Tasks []TaskView   `json:"tasks"`
+	// Tasks holds the open, waiting and deferred tasks; DoneTasks the
+	// completed ones, most recently finished first, so a page can fold them.
+	Tasks     []TaskView `json:"tasks"`
+	DoneTasks []TaskView `json:"done_tasks"`
 }
 
 // Stats summarizes the knowledge base.
@@ -151,6 +154,18 @@ func (c *Core) Tasks(states []model.TaskState, includeArchived bool) []TaskView 
 		return true
 	})
 	sort.Slice(out, func(i, j int) bool {
+		// Completed tasks read as a journal: most recently finished first.
+		if out[i].State == model.TaskDone && out[j].State == model.TaskDone {
+			ci, cj := out[i].CompletedAt, out[j].CompletedAt
+			switch {
+			case ci != nil && cj != nil && !ci.Equal(*cj):
+				return ci.After(*cj)
+			case ci != nil && cj == nil:
+				return true
+			case ci == nil && cj != nil:
+				return false
+			}
+		}
 		if out[i].Score != out[j].Score {
 			return out[i].Score > out[j].Score
 		}
@@ -267,10 +282,22 @@ func (c *Core) Topic(id string) (*TopicPage, error) {
 		case *model.Task:
 			if !v.Archived && contains(v.Topics, id) {
 				s, why := Score(v, now, act)
-				page.Tasks = append(page.Tasks, TaskView{Task: v, Score: s, Reasons: why, TopicNames: c.topicNames(v.Topics)})
+				tv := TaskView{Task: v, Score: s, Reasons: why, TopicNames: c.topicNames(v.Topics)}
+				if v.State == model.TaskDone {
+					page.DoneTasks = append(page.DoneTasks, tv)
+				} else {
+					page.Tasks = append(page.Tasks, tv)
+				}
 			}
 		}
 		return true
+	})
+	sort.Slice(page.DoneTasks, func(i, j int) bool {
+		ci, cj := page.DoneTasks[i].CompletedAt, page.DoneTasks[j].CompletedAt
+		if ci != nil && cj != nil && !ci.Equal(*cj) {
+			return ci.After(*cj)
+		}
+		return page.DoneTasks[i].UpdatedAt.After(page.DoneTasks[j].UpdatedAt)
 	})
 	sort.Slice(page.Notes, func(i, j int) bool { return page.Notes[i].UpdatedAt.After(page.Notes[j].UpdatedAt) })
 	sort.Slice(page.Tasks, func(i, j int) bool {

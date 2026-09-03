@@ -324,6 +324,14 @@ func (c *Core) finishCommit(txn *model.Txn, ws *workspace, receipt *model.Receip
 		}
 		c.publish(Event{Type: "object.changed", At: txn.At, Payload: ch})
 	}
+	for _, id := range txn.Affected {
+		// A topic whose members changed: same event, so pages refresh; the
+		// object itself is unchanged (rev stays), which "members" says.
+		if obj, ok := c.st.objects[id]; ok {
+			c.publish(Event{Type: "object.changed", At: txn.At, Payload: map[string]any{
+				"id": id, "type": string(obj.GetMeta().Type), "rev": obj.GetMeta().Rev, "removed": false, "members": true}})
+		}
+	}
 }
 
 // Snapshot forces a snapshot write.
@@ -368,6 +376,7 @@ func (c *Core) Commit(ctx context.Context, actor string, cause *model.Cause, ops
 	}
 	txn.Before = ws.before
 	txn.Touched = ws.touched
+	txn.Affected = affectedOnly(ws)
 	receipt := buildReceipt(txn, ws)
 	txn.Summary = receipt.Summary
 	txn.Lines = receipt.Lines
@@ -474,6 +483,7 @@ func (c *Core) Undo(ctx context.Context, actor, txnID string, force bool) (*mode
 	}
 	undo.Before = ws.before
 	undo.Touched = ws.touched
+	undo.Affected = affectedOnly(ws)
 	receipt := buildReceipt(undo, ws)
 	receipt.Summary = "Undid: " + head.Summary
 	undo.Summary = receipt.Summary
@@ -680,7 +690,7 @@ func (c *Core) ReceiptFor(txnID string) (*model.Receipt, bool) {
 // audit view shows what was said at the time.
 func (c *Core) receiptFor(t *model.Txn) *model.Receipt {
 	r := &model.Receipt{TxnID: t.ID, Seq: t.Seq, At: t.At, Actor: t.Actor, Cause: t.Cause, UndoOf: t.UndoOf,
-		Lines: t.Lines, Summary: t.Summary, Touched: t.Touched}
+		Lines: t.Lines, Summary: t.Summary, Touched: t.Touched, Affected: t.Affected}
 	if r.Lines == nil {
 		r.Lines = []model.ReceiptLine{}
 	}
@@ -836,4 +846,23 @@ func loadInstanceID(dir string) string {
 	id := ids.New("inst")
 	_ = os.WriteFile(path, []byte(id+"\n"), 0o600)
 	return id
+}
+
+// affectedOnly returns the workspace's affected topics minus the ones that
+// were written in the same transaction (those are in Touched already).
+func affectedOnly(ws *workspace) []string {
+	var out []string
+	for _, id := range ws.affected {
+		touched := false
+		for _, t := range ws.touched {
+			if t == id {
+				touched = true
+				break
+			}
+		}
+		if !touched {
+			out = append(out, id)
+		}
+	}
+	return out
 }

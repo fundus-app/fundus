@@ -151,3 +151,45 @@ func TestLiveTopicCatchUp(t *testing.T) {
 		}
 	}
 }
+
+// TestLiveNoSpuriousTopic replays a mis-filing the user saw: with an
+// unrelated topic in the store, a capture about UI updates must not be linked
+// to it (the model had attached "UI-Updates" to "RPG mit Godot Engine").
+func TestLiveNoSpuriousTopic(t *testing.T) {
+	c, tr := liveTriager(t)
+	rec, err := c.Commit(context.Background(), "user:test", nil, []model.Op{
+		{Op: "topic.create", Name: str("RPG mit Godot Engine"), Kind: "project"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rpg := rec.Lines[0].ObjectID
+	if _, err := c.Commit(context.Background(), "user:test", nil, []model.Op{
+		{Op: "note.create", Kind: "idea", Title: str("RPG mit Godot Engine bauen"), Markdown: "Kleines Rollenspiel als Nebenprojekt.", Topics: []string{rpg}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"Die UI Updates klappen noch nicht richtig.", "Verstehen, warum Tage in Fundus nicht geupdated werden."} {
+		id := capture(t, c, text)
+		out, err := tr.Process(context.Background(), id)
+		if err != nil {
+			t.Fatalf("%q: %v", text, err)
+		}
+		t.Logf("%-40s → %s", model.Shorten(text, 40), out.Summary)
+		for _, touched := range out.Touched {
+			obj, _ := c.Get(touched)
+			var topics []string
+			switch o := obj.(type) {
+			case *model.Note:
+				topics = o.Topics
+			case *model.Task:
+				topics = o.Topics
+			}
+			for _, tp := range topics {
+				if tp == rpg {
+					t.Errorf("%q was linked to the unrelated RPG topic", text)
+				}
+			}
+		}
+	}
+}

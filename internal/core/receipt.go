@@ -33,7 +33,7 @@ func buildReceipt(txn *model.Txn, ws *workspace) *model.Receipt {
 // and the before/after objects, never from a model's claims. Ops that changed
 // nothing (completing a done task, linking an already linked topic) say so.
 func renderReceipt(txn *model.Txn, lookup, before func(string) model.Object) *model.Receipt {
-	r := &model.Receipt{TxnID: txn.ID, Seq: txn.Seq, At: txn.At, Actor: txn.Actor, Cause: txn.Cause, UndoOf: txn.UndoOf, Touched: txn.Touched}
+	r := &model.Receipt{TxnID: txn.ID, Seq: txn.Seq, At: txn.At, Actor: txn.Actor, Cause: txn.Cause, UndoOf: txn.UndoOf, Touched: txn.Touched, Affected: txn.Affected}
 	quiet := 0
 	for _, op := range txn.Ops {
 		obj := lookup(op.ID)
@@ -270,7 +270,9 @@ func renderReceipt(txn *model.Txn, lookup, before func(string) model.Object) *mo
 			quiet++
 			continue
 		case "object.archive":
-			text = fmt.Sprintf("Archived %s “%s”.", typ, name())
+			// Users call this "delete": the object leaves every view and
+			// comes back with undo or restore.
+			text = fmt.Sprintf("Deleted %s “%s”.", typ, name())
 		case "object.unarchive":
 			text = fmt.Sprintf("Unarchived %s “%s”.", typ, name())
 		case "object.restore":
