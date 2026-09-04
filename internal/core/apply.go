@@ -400,6 +400,12 @@ func (w *workspace) apply(op *model.Op, txn *model.Txn) error {
 		}
 		t := &model.Task{Meta: model.Meta{ID: op.ID, Type: model.TypeTask}, Text: text, State: model.TaskOpen,
 			Topics: dedupe(op.Topics), Origins: dedupe(op.Origins)}
+		switch op.Kind {
+		case "", string(model.TaskKindResearch):
+			t.Kind = model.TaskKind(op.Kind)
+		default:
+			return fmt.Errorf("%w: task kind %q", ErrInvalid, op.Kind)
+		}
 		w.affect(t.Topics...)
 		if op.State != "" {
 			if err := validTaskState(op.State); err != nil {

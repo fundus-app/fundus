@@ -38,6 +38,7 @@ type Triager struct {
 	role     config.Role
 	policy   config.Policy
 	ready    bool
+	search   SearchFunc
 }
 
 // New builds a Triager. A nil provider parks the worker until Configure is
@@ -51,6 +52,26 @@ func New(c *core.Core, p llm.Provider, role config.Role, policy config.Policy, l
 
 // Configure swaps provider, role and policy at runtime (settings changed in
 // the UI). A nil provider marks the triager as not ready.
+// SearchFunc searches the store for context; hybrid when embeddings exist.
+type SearchFunc func(ctx context.Context, q string, limit int, types []model.Type, includeAll bool) []core.Hit
+
+// SetSearch replaces the lexical search used to gather context.
+func (t *Triager) SetSearch(fn SearchFunc) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.search = fn
+}
+
+func (t *Triager) searchFor(ctx context.Context, q string, limit int, types []model.Type) []core.Hit {
+	t.mu.RLock()
+	fn := t.search
+	t.mu.RUnlock()
+	if fn != nil {
+		return fn(ctx, q, limit, types, false)
+	}
+	return t.core.Search(q, limit, types, false)
+}
+
 func (t *Triager) Configure(p llm.Provider, role config.Role, policy config.Policy) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -228,7 +249,7 @@ func retryable(err error) bool {
 // structurally invalid or references objects that do not exist; nothing is
 // written in any of these steps.
 func (t *Triager) ask(ctx context.Context, cap *model.Capture, provider llm.Provider, role config.Role, policy config.Policy) (*Result, []model.Op, string, string, error) {
-	tctx := t.buildContext(cap)
+	tctx := t.buildContext(ctx, cap)
 	shown := tctx.ids()
 	req := &llm.Request{Model: role.Model, System: systemPrompt, MaxTokens: role.MaxTokens,
 		Temperature: role.Temperature, ReasoningEffort: role.ReasoningEffort,
@@ -284,7 +305,7 @@ func (t *Triager) ask(ctx context.Context, cap *model.Capture, provider llm.Prov
 	return nil, nil, provider.Name(), role.Model, lastErr
 }
 
-func (t *Triager) buildContext(cap *model.Capture) *Context {
+func (t *Triager) buildContext(ctx context.Context, cap *model.Capture) *Context {
 	loc := t.core.Location()
 	now := t.now().In(loc)
 	tctx := &Context{Now: now.Format("2006-01-02 15:04 MST"), Weekday: now.Weekday().String(), Answer: cap.Answer,
@@ -307,13 +328,13 @@ func (t *Triager) buildContext(cap *model.Capture) *Context {
 	if cap.Answer != "" {
 		query += " " + cap.Answer
 	}
-	for _, h := range t.core.Search(query, 8, []model.Type{model.TypeNote}, false) {
+	for _, h := range t.searchFor(ctx, query, 8, []model.Type{model.TypeNote}) {
 		n := h.Object.(*model.Note)
 		tctx.Notes = append(tctx.Notes, NoteCtx{ID: n.ID, Kind: string(n.Kind), Title: n.NoteTitle,
 			Preview: model.Shorten(n.Body.PlainText(), 300), Topics: n.Topics, Updated: n.UpdatedAt.In(t.core.Location()).Format("2006-01-02")})
 	}
 	seen := map[string]bool{}
-	for _, h := range t.core.Search(query, 8, []model.Type{model.TypeTask}, false) {
+	for _, h := range t.searchFor(ctx, query, 8, []model.Type{model.TypeTask}) {
 		tk := h.Object.(*model.Task)
 		if tk.State == model.TaskDone {
 			continue
@@ -405,6 +426,9 @@ func parseResult(content string) (*Result, error) {
 		case "task.create":
 			if strings.TrimSpace(op.Text) == "" {
 				return nil, &ValidationError{Msg: fmt.Sprintf("operation %d: task.create needs text", i)}
+			}
+			if op.Kind != "" && op.Kind != string(model.TaskKindResearch) {
+				return nil, &ValidationError{Msg: fmt.Sprintf("operation %d: task kind %q", i, op.Kind)}
 			}
 			if op.State != "" && op.State != "open" && op.State != "later" && op.State != "waiting" && op.State != "done" {
 				return nil, &ValidationError{Msg: fmt.Sprintf("operation %d: task state %q", i, op.State)}
@@ -589,6 +613,13 @@ func Plan(c *core.Core, policy config.Policy, originID, fallbackText, classifica
 			topics = plausibleTopics(c, topics, inPlan, fallbackText+"\n"+op.Text)
 			o := model.Op{Op: "task.create", Text: trimSentence(op.Text), Topics: topics, Origins: []string{originID},
 				Due: op.Due, EffortMinutes: op.EffortMinutes, Importance: op.Importance, State: op.State}
+			// The classification decides what the task is, not its wording and
+			// not a per-op flag (small models sprinkle "research" on ordinary
+			// tasks): a research request in any language becomes a research task.
+			if classification == "research" {
+				o.Kind = string(model.TaskKindResearch)
+				o.Text = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(o.Text, "Research:"), "Recherche:"))
+			}
 			if op.WaitingOn != "" {
 				w := op.WaitingOn
 				o.WaitingOn = &w

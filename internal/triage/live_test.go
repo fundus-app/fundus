@@ -76,6 +76,20 @@ func TestLiveProvider(t *testing.T) {
 				t.Error("a vague 'maybe someday' must not become a task")
 			}
 		}},
+		{"Finde heraus, welche E-Ink-Displays am Raspberry Pi Zero laufen.", "research", func(t *testing.T) {
+			var found bool
+			for _, tv := range c.Tasks([]model.TaskState{model.TaskOpen}, false) {
+				if tv.Kind == model.TaskKindResearch {
+					found = true
+					if strings.HasPrefix(strings.ToLower(tv.Text), "research") || !strings.Contains(tv.Text, "E-Ink") {
+						t.Errorf("research task text should be the German question without a prefix: %q", tv.Text)
+					}
+				}
+			}
+			if !found {
+				t.Error("a German research request must become a research task by kind")
+			}
+		}},
 		{"hm", "", func(t *testing.T) {}},
 	}
 	for _, tc := range cases {

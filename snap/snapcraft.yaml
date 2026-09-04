@@ -1,0 +1,55 @@
+# Snap of the Linux desktop app plus the daemon. The release workflow fills
+# build-input/ with the Flutter bundle (build-input/bundle) and the static
+# daemon (build-input/daemon/fundus) and replaces the version before
+# snapcraft runs, so the snap packages exactly the binaries that were tested.
+name: fundus
+title: Fundus
+base: core24
+version: "0.0.0" # replaced by the release workflow
+summary: Capture anything. Let your AI maintain the rest.
+description: |
+  Fundus is a personal knowledge and task system with a language model as its
+  organising layer. Write a thought, a task or a fact in plain language;
+  Fundus files it as a note, an idea, a task or a topic, tells you exactly
+  what it did, and lets you undo any of it.
+
+  Everything stays on your machine in a plain event log. The model only ever
+  adds; it never rewrites or deletes what you wrote. Works with OpenAI, Google
+  Gemini, Anthropic, OpenRouter or an Ollama model on your own hardware.
+
+  Dictation needs the microphone: sudo snap connect fundus:audio-record
+license: AGPL-3.0
+website: https://fundus-app.de
+source-code: https://github.com/fundus-app/fundus
+issues: https://github.com/fundus-app/fundus/issues
+grade: stable
+confinement: strict
+
+platforms:
+  amd64:
+
+apps:
+  fundus:
+    command: usr/bin/fundus_app
+    extensions: [gnome]
+    plugs:
+      - network
+      - network-bind
+      - audio-record
+      - audio-playback
+      - home
+      - removable-media
+
+parts:
+  app:
+    plugin: dump
+    source: build-input/bundle
+    organize:
+      "*": usr/bin/
+    stage-packages:
+      - libpulse0
+  daemon:
+    plugin: dump
+    source: build-input/daemon
+    organize:
+      fundus: usr/bin/fundus

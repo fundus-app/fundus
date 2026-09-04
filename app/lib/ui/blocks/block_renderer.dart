@@ -1,8 +1,10 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../api/models.dart';
+import '../../state/app_state.dart';
 import '../theme.dart';
 import 'inline.dart';
 import 'ref_labels.dart';
@@ -153,26 +155,67 @@ class BlockView extends StatelessWidget {
           'external' => (Icons.public_rounded, scheme.tertiary),
           _ => (Icons.info_outline_rounded, scheme.secondary),
         };
+        final external = block.kind == 'external';
+        final auto =
+            block.kind == 'info' &&
+            block.text.startsWith('Automatic summary (');
         return Container(
           decoration: BoxDecoration(
-            color: color.withValues(alpha: 0.08),
+            color: color.withValues(alpha: external ? 0.05 : 0.08),
             borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: color.withValues(alpha: 0.35)),
+            border: external
+                ? Border(left: BorderSide(color: color, width: 3))
+                : Border.all(color: color.withValues(alpha: 0.35)),
           ),
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-          child: Row(
+          child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(icon, size: 16, color: color),
-              const SizedBox(width: 8),
-              Expanded(
-                child: InlineText(block.text, style: base, onRef: onRef),
+              if (external)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Text(
+                    'EXTERNAL',
+                    style: Theme.of(context).textTheme.labelSmall!.copyWith(
+                      fontSize: 10,
+                      letterSpacing: 1.2,
+                      color: color,
+                    ),
+                  ),
+                ),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (!external) ...[
+                    Icon(icon, size: 16, color: color),
+                    const SizedBox(width: 8),
+                  ],
+                  Expanded(
+                    child: InlineText(block.text, style: base, onRef: onRef),
+                  ),
+                  if (auto)
+                    Tooltip(
+                      message: 'Written by maintenance; edit or pin it to keep your own words',
+                      child: Padding(
+                        padding: const EdgeInsets.only(left: 8, top: 2),
+                        child: Text(
+                          'auto',
+                          key: const Key('auto-label'),
+                          style: Theme.of(context).textTheme.labelSmall!
+                              .copyWith(color: scheme.onSurfaceVariant),
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ],
           ),
         );
       case 'task_ref':
       case 'source_ref':
+        if (block.ref.startsWith('src_')) {
+          return SourceLine(id: block.ref, note: block.text);
+        }
         return Wrap(
           crossAxisAlignment: WrapCrossAlignment.center,
           spacing: 8,
@@ -259,7 +302,9 @@ class InlineText extends StatelessWidget {
               alignment: PlaceholderAlignment.middle,
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 2),
-                child: RefChip(id: n.text, onTap: onRef, dense: true),
+                child: n.text.startsWith('src_')
+                    ? SourceLine(id: n.text, inline: true)
+                    : RefChip(id: n.text, onTap: onRef, dense: true),
               ),
             ),
           );
@@ -368,4 +413,119 @@ class RefChip extends StatelessWidget {
       ),
     );
   }
+}
+
+/// A cited web page: its title as a link that opens the URL, the retrieval
+/// date muted. Resolved through the app state (`GET /v1/objects/{src_…}`);
+/// without one it falls back to a plain chip.
+class SourceLine extends StatelessWidget {
+  const SourceLine({
+    super.key,
+    required this.id,
+    this.note = '',
+    this.inline = false,
+  });
+  final String id;
+  final String note;
+  final bool inline;
+
+  @override
+  Widget build(BuildContext context) {
+    AppState? state;
+    try {
+      state = Provider.of<AppState>(context, listen: false);
+    } on ProviderNotFoundException {
+      state = null;
+    }
+    if (state == null) return RefChip(id: id, dense: inline);
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return FutureBuilder<Source?>(
+      future: state.sourceFor(id),
+      builder: (context, snap) {
+        final src = snap.data;
+        final title = src == null
+            ? 'source'
+            : (src.title.isNotEmpty
+                  ? src.title
+                  : (src.host.isNotEmpty ? src.host : src.url));
+        final link = InkWell(
+          key: Key('source-$id'),
+          onTap: src == null || src.url.isEmpty
+              ? null
+              : () => launchUrl(
+                  Uri.parse(src.url),
+                  mode: LaunchMode.externalApplication,
+                ),
+          child: Text(
+            title,
+            style:
+                (inline
+                        ? theme.textTheme.bodySmall
+                        : theme.textTheme.bodyMedium)!
+                    .copyWith(
+                      color: scheme.primary,
+                      decoration: TextDecoration.underline,
+                      decorationColor: scheme.primary.withValues(alpha: 0.4),
+                    ),
+            maxLines: inline ? 1 : 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+        );
+        if (inline) return link;
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: 2),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                Icons.link_rounded,
+                size: 15,
+                color: scheme.onSurfaceVariant,
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Wrap(
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  spacing: 8,
+                  children: [
+                    link,
+                    if (src?.fetchedAt != null)
+                      Text(
+                        'retrieved ${shortDateOf(src!.fetchedAt!)}',
+                        style: theme.textTheme.labelSmall!.copyWith(
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    if (note.isNotEmpty)
+                      Text(note, style: theme.textTheme.bodySmall),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// "3 Sep 2026" without pulling the intl-based helpers into the renderer.
+String shortDateOf(DateTime t) {
+  const months = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ];
+  final l = t.toLocal();
+  return '${l.day} ${months[l.month - 1]} ${l.year}';
 }

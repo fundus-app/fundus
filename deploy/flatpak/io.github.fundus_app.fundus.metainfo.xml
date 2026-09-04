@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.fundus_app.fundus</id>
+  <name>Fundus</name>
+  <summary>Capture anything. Let your AI maintain the rest.</summary>
+  <developer id="io.github.fundus_app"><name>The Fundus authors</name></developer>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-or-later</project_license>
+  <description>
+    <p>Fundus is a personal knowledge and task system with a language model as its organising layer. You write a thought, a task or a fact in plain language; Fundus files it as a note, an idea, a task or a topic, tells you exactly what it did, and lets you undo any of it.</p>
+    <p>Everything stays on your machine in a plain event log. The model only ever adds; it never rewrites or deletes what you wrote. Works with OpenAI, Google Gemini, Anthropic, OpenRouter or an Ollama model on your own hardware.</p>
+    <ul>
+      <li>One capture box for everything, with dictation</li>
+      <li>Receipts for every change, with undo</li>
+      <li>Topics that gather notes and tasks as subjects recur</li>
+      <li>A conversation that searches your notes before it answers</li>
+      <li>Markdown export and a consistent backup at any time</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.fundus_app.fundus.desktop</launchable>
+  <url type="homepage">https://fundus-app.de</url>
+  <url type="bugtracker">https://github.com/fundus-app/fundus/issues</url>
+  <url type="vcs-browser">https://github.com/fundus-app/fundus</url>
+  <screenshots>
+    <screenshot type="default">
+      <caption>The inbox: captures, receipts and undo</caption>
+      <image>https://raw.githubusercontent.com/fundus-app/fundus/main/docs/screenshots/inbox.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>A note with its provenance and history</caption>
+      <image>https://raw.githubusercontent.com/fundus-app/fundus/main/docs/screenshots/note.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Conversation that cites your own notes</caption>
+      <image>https://raw.githubusercontent.com/fundus-app/fundus/main/docs/screenshots/conversation.png</image>
+    </screenshot>
+  </screenshots>
+  <content_rating type="oars-1.1"/>
+  <branding>
+    <color type="primary" scheme_preference="light">#f6f1e8</color>
+    <color type="primary" scheme_preference="dark">#2b2622</color>
+  </branding>
+  <releases>
+    <release version="0.10.2" date="2026-09-03"/>
+  </releases>
+</component>

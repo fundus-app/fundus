@@ -60,11 +60,10 @@ the transcript into the field for review; nothing is captured until you press
 Enter. `Ctrl Shift K` toggles recording, `Esc` stops it. The button only shows
 when a dictation model is connected (`GET /v1/health` → `dictation: true`).
 
-- Linux: needs `parecord` and `pactl` (package `pulseaudio-utils`, works with
-  PipeWire through `pipewire-pulse`) and `ffmpeg`. Without them the button
-  reports "Microphone not available".
-- macOS: the microphone permission prompt uses `NSMicrophoneUsageDescription`
-  from `Runner/Info.plist`.
+- Linux: records through PulseAudio's client library (`libpulse`, which
+  every desktop ships; PipeWire answers through its pulse compatibility). No
+  helper binaries, so it also works inside Flatpak and Snap. When no source
+  can be opened the button reports "Microphone not available".
 - Web: `MediaRecorder`/`getUserMedia`; the browser asks for permission.
 
 The second e2e test records through the real plugin against a daemon that

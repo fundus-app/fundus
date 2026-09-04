@@ -164,7 +164,9 @@ class ToastController extends ChangeNotifier {
       ok = false;
     }
     if (_find(id) == null) return;
-    if (ok) {
+    if (ok && t.settledText.isEmpty) {
+      dismiss(id);
+    } else if (ok) {
       settle(id);
     } else {
       t.busy = false;

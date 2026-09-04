@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/fundus-app/fundus/internal/maintenance"
+	"github.com/fundus-app/fundus/internal/research"
 	"io"
 	"net/http"
 	"strconv"
@@ -45,6 +47,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"timezone":       s.core.Location().String(),
 		"ui":             webui.Built(),
 		"dictation":      cfg.DictationAvailable(),
+		"research":       s.research != nil && s.research.Available(),
+		"embedding":      cfg.EmbeddingAvailable(),
+		"maintenance":    s.maintenanceHealth(),
 		"recovery":       s.core.Recovery(),
 		"warnings":       warnings,
 	})
@@ -267,24 +272,34 @@ func (s *Server) handleCaptureAccept(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "bad_request", err.Error())
 		return
 	}
-	if req.Operations == nil {
-		if c.Result == nil || len(c.Result.Proposal) == 0 {
-			writeError(w, 400, "bad_request", "this capture has no proposal; send operations")
-			return
-		}
-		if err := json.Unmarshal(c.Result.Proposal, &req.Operations); err != nil {
+	var ops []model.Op
+	if req.Operations == nil && c.Result != nil && len(c.Result.CoreProposal) > 0 {
+		// A maintenance proposal: core operations, applied as the user.
+		if err := json.Unmarshal(c.Result.CoreProposal, &ops); err != nil {
 			writeError(w, 500, "internal", "stored proposal is unreadable: "+err.Error())
 			return
 		}
-	}
-	classification := ""
-	if c.Result != nil {
-		classification = c.Result.Classification
-	}
-	ops, err := triage.Plan(s.core, s.config().Autonomy, c.ID, c.Text, classification, req.Operations, nil)
-	if err != nil {
-		writeError(w, 400, "invalid", err.Error())
-		return
+	} else {
+		if req.Operations == nil {
+			if c.Result == nil || len(c.Result.Proposal) == 0 {
+				writeError(w, 400, "bad_request", "this capture has no proposal; send operations")
+				return
+			}
+			if err := json.Unmarshal(c.Result.Proposal, &req.Operations); err != nil {
+				writeError(w, 500, "internal", "stored proposal is unreadable: "+err.Error())
+				return
+			}
+		}
+		classification := ""
+		if c.Result != nil {
+			classification = c.Result.Classification
+		}
+		planned, err := triage.Plan(s.core, s.config().Autonomy, c.ID, c.Text, classification, req.Operations, nil)
+		if err != nil {
+			writeError(w, 400, "invalid", err.Error())
+			return
+		}
+		ops = planned
 	}
 	result := &model.CaptureResult{Summary: "Accepted by the user", ProcessedAt: time.Now().UTC()}
 	if c.Result != nil {
@@ -475,7 +490,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			types = append(types, model.Type(strings.TrimSpace(t)))
 		}
 	}
-	hits := s.core.Search(q, intParam(r, "limit", 20), types, boolParam(r, "all"))
+	hits := s.SearchHits(r.Context(), q, intParam(r, "limit", 20), types, boolParam(r, "all"))
 	out := make([]searchHit, 0, len(hits))
 	for _, h := range hits {
 		sh := searchHit{ID: h.ID, Type: h.Type, Title: h.Title, Score: h.Score}
@@ -1028,4 +1043,90 @@ func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"text": text, "model": cfg.Dictation.Model})
+}
+
+// handleResearchList reports the tasks under research.
+func (s *Server) handleResearchList(w http.ResponseWriter, r *http.Request) {
+	running := []string{}
+	if s.research != nil {
+		running = s.research.Running()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"running": running, "available": s.research != nil && s.research.Available()})
+}
+
+// handleResearchStart starts research for a task or a fresh question.
+func (s *Server) handleResearchStart(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		TaskID   string   `json:"task_id"`
+		Question string   `json:"question"`
+		Topics   []string `json:"topics"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if s.research == nil || !s.research.Available() {
+		writeError(w, http.StatusServiceUnavailable, "research_unavailable", "research needs a model and a search backend: set a Brave key, a SearXNG address, or use OpenAI or OpenRouter (Settings → Research)")
+		return
+	}
+	taskID := strings.TrimSpace(req.TaskID)
+	var err error
+	if taskID == "" {
+		taskID, err = s.research.StartQuestion(r.Context(), req.Question, actorFor(r), req.Topics)
+	} else {
+		err = s.research.Start(taskID)
+	}
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusAccepted, map[string]any{"task_id": taskID, "status": "running"})
+	case errors.Is(err, research.ErrRunning):
+		writeError(w, http.StatusConflict, "already_running", err.Error())
+	case errors.Is(err, research.ErrNotOpen):
+		writeError(w, http.StatusConflict, "not_open", err.Error())
+	case errors.Is(err, research.ErrUnavailable):
+		writeError(w, http.StatusServiceUnavailable, "research_unavailable", err.Error())
+	default:
+		writeCoreError(w, err)
+	}
+}
+
+func (s *Server) maintenanceHealth() map[string]any {
+	if s.maint == nil {
+		return map[string]any{"enabled": false, "running": false}
+	}
+	st := s.maint.Status()
+	out := map[string]any{"enabled": st.Enabled, "running": st.Running}
+	if !st.Next.IsZero() {
+		out["next"] = st.Next
+	}
+	return out
+}
+
+// handleMaintenanceStatus reports schedule, the running job and history.
+func (s *Server) handleMaintenanceStatus(w http.ResponseWriter, r *http.Request) {
+	if s.maint == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"enabled": false, "running": false, "runs": []any{}})
+		return
+	}
+	st := s.maint.Status()
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": st.Enabled, "running": st.Running, "run_id": st.RunID, "next": st.Next,
+		"last": st.Last, "runs": s.maint.Runs(intParam(r, "limit", 10))})
+}
+
+// handleMaintenanceRun starts a run now.
+func (s *Server) handleMaintenanceRun(w http.ResponseWriter, r *http.Request) {
+	if s.maint == nil {
+		writeError(w, http.StatusServiceUnavailable, "maintenance_unavailable", "maintenance is not wired")
+		return
+	}
+	id, err := s.maint.Start("manual")
+	if errors.Is(err, maintenance.ErrRunning) {
+		writeError(w, http.StatusConflict, "already_running", err.Error())
+		return
+	}
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"run_id": id, "status": "running"})
 }

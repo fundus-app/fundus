@@ -134,6 +134,10 @@ func client(cmd string, args []string) error {
 		return c.do("POST", "/v1/captures/"+args[0]+"/dismiss", nil, nil)
 	case "ask", "chat":
 		return cmdAsk(c, args)
+	case "research":
+		return cmdResearch(c, args)
+	case "maintain", "maintenance":
+		return cmdMaintain(c)
 	case "probe":
 		return cmdProbe(c, args)
 	case "export":
@@ -733,4 +737,108 @@ func cmdBackup(c *httpClient, args []string) error {
 	}
 	fmt.Println("wrote", *out)
 	return nil
+}
+
+// cmdResearch starts research for a task id or a question and waits for the
+// note, printing the daemon's progress on the way.
+func cmdResearch(c *httpClient, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: fundus research TASK_ID | QUESTION...")
+	}
+	body := map[string]any{}
+	if len(args) == 1 && strings.HasPrefix(args[0], "task_") {
+		body["task_id"] = args[0]
+	} else {
+		body["question"] = strings.Join(args, " ")
+	}
+	var started struct {
+		TaskID string `json:"task_id"`
+	}
+	if err := c.do("POST", "/v1/research", body, &started); err != nil {
+		return err
+	}
+	fmt.Println("researching", started.TaskID)
+	deadline := time.Now().Add(6 * time.Minute)
+	lastState := ""
+	for time.Now().Before(deadline) {
+		var task struct {
+			State string   `json:"state"`
+			Notes []string `json:"notes"`
+		}
+		if err := c.do("GET", "/v1/objects/"+started.TaskID, nil, &task); err != nil {
+			return err
+		}
+		if task.State != lastState {
+			lastState = task.State
+		}
+		if task.State == "done" && len(task.Notes) > 0 {
+			fmt.Println()
+			return cmdShow(c, task.Notes[len(task.Notes)-1])
+		}
+		var status struct {
+			Running []string `json:"running"`
+		}
+		_ = c.do("GET", "/v1/research", nil, &status)
+		running := false
+		for _, id := range status.Running {
+			if id == started.TaskID {
+				running = true
+			}
+		}
+		if !running && task.State != "done" {
+			return fmt.Errorf("research stopped without a result; see the daemon log")
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return fmt.Errorf("timed out waiting for the research note")
+}
+
+// cmdMaintain starts a maintenance run and prints its report.
+func cmdMaintain(c *httpClient) error {
+	var started struct {
+		RunID string `json:"run_id"`
+	}
+	if err := c.do("POST", "/v1/maintenance/run", map[string]any{}, &started); err != nil {
+		return err
+	}
+	fmt.Println("maintenance run", started.RunID)
+	deadline := time.Now().Add(15 * time.Minute)
+	for time.Now().Before(deadline) {
+		var st struct {
+			Running bool `json:"running"`
+			Last    *struct {
+				ID   string `json:"id"`
+				Jobs []struct {
+					Name     string   `json:"name"`
+					Checked  int      `json:"checked"`
+					Changed  int      `json:"changed"`
+					Proposed int      `json:"proposed"`
+					Notes    []string `json:"notes"`
+					Error    string   `json:"error"`
+					Skipped  string   `json:"skipped"`
+				} `json:"jobs"`
+			} `json:"last"`
+		}
+		if err := c.do("GET", "/v1/maintenance", nil, &st); err != nil {
+			return err
+		}
+		if !st.Running && st.Last != nil && st.Last.ID == started.RunID {
+			for _, j := range st.Last.Jobs {
+				line := fmt.Sprintf("%-11s checked %-4d changed %-4d proposed %d", j.Name, j.Checked, j.Changed, j.Proposed)
+				if j.Skipped != "" {
+					line += "  (skipped: " + j.Skipped + ")"
+				}
+				if j.Error != "" {
+					line += "  error: " + j.Error
+				}
+				fmt.Println(line)
+				for _, n := range j.Notes {
+					fmt.Println("   -", n)
+				}
+			}
+			return nil
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return fmt.Errorf("timed out waiting for the run")
 }

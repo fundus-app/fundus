@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Fundus
+Comment=Capture anything. Let your AI maintain the rest.
+Exec=fundus
+Icon=${SNAP}/meta/gui/fundus.png
+Terminal=false
+Categories=Office;
+Keywords=notes;tasks;knowledge;capture;
+StartupWMClass=fundus_app

@@ -10,6 +10,18 @@ type Fake struct {
 	// TranscribeFn makes the fake a Transcriber; nil means "cannot".
 	TranscribeFn func(ctx context.Context, req *TranscribeRequest) (string, error)
 	Transcribed  []*TranscribeRequest
+	// SearchFn makes the fake a WebSearcher; nil means "cannot".
+	SearchFn func(ctx context.Context, model, query string, n int) ([]SearchResult, error)
+	Searches []string
+}
+
+// SearchWeb implements WebSearcher when SearchFn is set.
+func (f *Fake) SearchWeb(ctx context.Context, model, query string, n int) ([]SearchResult, error) {
+	f.Searches = append(f.Searches, query)
+	if f.SearchFn == nil {
+		return nil, &Error{Provider: f.Name(), Message: "this provider cannot search the web"}
+	}
+	return f.SearchFn(ctx, model, query, n)
 }
 
 // Transcribe implements Transcriber when TranscribeFn is set.

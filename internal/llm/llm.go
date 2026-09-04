@@ -135,3 +135,16 @@ func ExtractJSON(s string) string {
 	}
 	return s[start : end+1]
 }
+
+// SearchResult is one hit of a web search.
+type SearchResult struct {
+	URL     string `json:"url"`
+	Title   string `json:"title,omitempty"`
+	Snippet string `json:"snippet,omitempty"`
+}
+
+// WebSearcher is implemented by providers that can search the web
+// themselves (OpenAI search models, OpenRouter's web plugin).
+type WebSearcher interface {
+	SearchWeb(ctx context.Context, model, query string, n int) ([]SearchResult, error)
+}

@@ -1,6 +1,6 @@
 # Fundus: Concept 0.3
 
-**Status:** concept 0.3.5, backend and client implemented (see [Status](#status))
+**Status:** concept 0.3.7, backend and client implemented (see [Status](#status))
 **Category:** personal, self-hosted knowledge and task system with an LLM as the primary operating and organising layer
 **License:** AGPL-3.0 ([ADR-0008](decisions/ADR-0008-license.md))
 
@@ -144,7 +144,7 @@ Deliberately not adopted: universal agent, shell access, coding orchestration, a
 
 **Included:** the Go daemon as one static binary; JSONL event log and snapshots; versioned JSON API with SSE; Flutter client for Linux and the embedded web build; text capture via CLI, API and desktop shortcut window; conversation view; notes, ideas, tasks, topics with stable IDs; Inbox, Open, Relevant, Ideas, Notes, Topics, Waiting, Later and Changes; in-memory search; OpenAI-compatible providers and the heuristic fallback; typed operations; receipts, audit log and undo; JSON and Markdown export.
 
-**Deferred:** optional speech input (through an OpenAI-compatible transcription endpoint), the research tool, Android and other mobile targets, embeddings.
+**Deferred:** Android and other mobile targets, a native Anthropic adapter, controlled refresh of stale research.
 
 **Not included:** calendar sync, e-mail and messaging, team features, collaborative editing, a separate web frontend codebase, full offline mode and bidirectional sync, kanban and gantt, habit tracking, general automation, shell access or browser control, autonomous actions outside the knowledge and task system, hardware.
 
@@ -207,7 +207,7 @@ Not a "second brain" the user must tend; not a to-do system that enforces daily 
 | Undo | transaction-level with before-images; never re-triggers processing | [0009](decisions/ADR-0009-undo.md) |
 | Research | reader has no write tools; external claims stay marked | [0010](decisions/ADR-0010-research-untrusted-web.md) |
 | Conversations | messages are captures; conversations are objects | [0011](decisions/ADR-0011-chat-messages-are-captures.md) |
-| Search | in-memory BM25 rebuilt from state; embeddings later | [0012](decisions/ADR-0012-search.md) |
+| Search | in-memory BM25 rebuilt from state; embeddings fused in since 0.3.7 | [0012](decisions/ADR-0012-search.md), [0014](decisions/ADR-0014-maintenance-and-assist.md) |
 
 Also decided: Empoche contributes no code (Vue 2/Electron/MongoDB, 2019); MongoDB is not planned; the repository is a monorepo (`cmd/`, `internal/`, `app/`, `docs/`); the UI is English-only for now with translations later.
 | One-command start | `fundus` alone starts the daemon and opens the UI; settings are edited at runtime via the API | [0013](decisions/ADR-0013-one-command-start-and-runtime-settings.md) |
@@ -231,6 +231,16 @@ Implemented: the Go daemon with event log, snapshots, hash-chain verification, t
 - MongoDB and Empoche code ruled out; search fixed to an in-memory index.
 - License set to AGPL-3.0; repo public, English-only UI.
 
+### 0.3.7 (2026-09-04, curation)
+
+- Background maintenance ([ADR-0014](decisions/ADR-0014-maintenance-and-assist.md)): a daily run (or on demand) with integrity fixes, topics for untagged notes and tasks, duplicate detection with related links and merge proposals in the inbox, one automatic summary block per topic, and an optional assist level that drafts from the user's notes or starts research for open tasks. Run history under the data directory; every change a normal transaction with receipt and undo.
+- Embeddings: vectors from any OpenAI-compatible `/embeddings` endpoint cached per model under the data directory; search, triage context, the conversation's search tool and duplicate detection fuse lexical and semantic ranks.
+- Proposal captures gained `lines` and `core_proposal`, so the inbox can carry decisions that are not triage results.
+
+### 0.3.6 (2026-09-04, research)
+
+- Research implemented as designed in §9 and ADR-0010: a reader with `web_search` and `fetch_page` and no write tools; a hardened fetcher (no private destinations, bounded size and hops, readability reduction); Brave, SearXNG or the provider's own search as backends; the curator stores sources, one note with the answer in an `external` callout and `[n]` citations, and completes the task, all in one undoable transaction. Started by itself when triage files a research task (unless `research.manual`), from "Research this", or from the conversation (`research` tool); progress streams as `research.progress` events.
+
 ### 0.3.5 (2026-09-03, dictation, Gemini, current models)
 
 - Dictation: microphone in the capture bar, `POST /v1/transcribe`, `[dictation]` role in the config; OpenAI via `/audio/transcriptions`, Gemini and OpenRouter via `input_audio` in a chat completion; topic names as spelling hints; the transcript is reviewed before capture.
@@ -245,7 +255,7 @@ Implemented: the Go daemon with event log, snapshots, hash-chain verification, t
 - The user message names the capture's language when common function words make it obvious, which stops small models from answering an English capture in the language of the surrounding context.
 - Receipts read as one sentence: "Created task “X” in Fundus, due Fri 12 Sep." No "No due date."; pure topic links read "Linked note “X” to Fundus."
 - Client: no object ids, revisions, actor strings or provider slugs in the primary interface; receipts render references inline; detail views carry one fact row instead of chips.
-- Releases: every push to main refreshes the rolling `edge` pre-release; version tags with or without the `v` prefix publish a release.
+- Releases: every push to main refreshes the rolling `edge` pre-release; version tags with or without the `v` prefix publish a release. Linux ships as AppImage, Flatpak bundle and snap (Snap Store publishing gated on a store token), all from one tested bundle.
 
 ### 0.3.3 (2026-09-03, name)
 

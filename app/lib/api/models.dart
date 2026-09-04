@@ -253,6 +253,11 @@ class CaptureResult {
 
   /// Why a capture is parked: unclear | low_confidence | proposal | discard | undone.
   final String reason;
+
+  /// Maintenance proposals: plain sentences of what accepting does, and
+  /// whether the daemon holds core ops for it (opaque to the client).
+  final List<String> lines;
+  final bool hasCoreProposal;
   const CaptureResult({
     this.classification = '',
     this.confidence = 0,
@@ -264,6 +269,8 @@ class CaptureResult {
     this.retryable = false,
     this.proposal = const [],
     this.reason = '',
+    this.lines = const [],
+    this.hasCoreProposal = false,
   });
   factory CaptureResult.fromJson(Map<String, dynamic> j) => CaptureResult(
     classification: _str(j['classification']),
@@ -275,6 +282,8 @@ class CaptureResult {
     model: _str(j['model']),
     retryable: _bool(j['retryable']),
     reason: _str(j['reason']),
+    lines: _strs(j['lines']),
+    hasCoreProposal: j['core_proposal'] != null,
     proposal: j['proposal'] is List
         ? (j['proposal'] as List)
               .whereType<Map<String, dynamic>>()
@@ -484,7 +493,11 @@ class Capture {
   bool get hasProposal => result?.proposal.isNotEmpty == true;
   bool get isRetrying => status == 'failed' && result?.retryable == true;
   bool get canAccept =>
-      hasProposal && (status == 'needs_review' || status == 'failed');
+      (hasProposal || result?.hasCoreProposal == true) &&
+      (status == 'needs_review' || status == 'failed');
+
+  /// A proposal the nightly maintenance parked for review.
+  bool get isMaintenance => source == 'maintenance';
 
   /// The receipt of the model's filing, if any and not undone.
   Receipt? get filingReceipt {
@@ -517,10 +530,13 @@ class Task {
   final List<String> reasons;
   final List<String> topicNames;
 
+  /// "" for an ordinary task, "research" for one the daemon researches.
+  final String kind;
   const Task({
     required this.meta,
     required this.text,
     this.state = 'open',
+    this.kind = '',
     this.due = '',
     this.effortMinutes = 0,
     this.importance = 0,
@@ -549,6 +565,7 @@ class Task {
     origins: _strs(j['origins']),
     notes: _strs(j['notes']),
     completedAt: _date(j['completed_at']),
+    kind: _str(j['kind']),
     mentions: _int(j['mentions']),
     score: _dbl(j['score']),
     reasons: _strs(j['reasons']),
@@ -701,6 +718,7 @@ class ObjectDetail {
   final Note? note;
   final Task? task;
   final Topic? topic;
+  final Source? source;
   final Capture? capture;
   final Conversation? conversation;
   final List<Receipt> receipts;
@@ -714,6 +732,7 @@ class ObjectDetail {
     this.note,
     this.task,
     this.topic,
+    this.source,
     this.capture,
     this.conversation,
     this.receipts = const [],
@@ -747,6 +766,8 @@ class ObjectDetail {
       note: meta.type == 'note' ? Note.fromJson(obj) : null,
       task: meta.type == 'task' ? Task.fromJson(obj) : null,
       topic: meta.type == 'topic' ? Topic.fromJson(obj) : null,
+      source: meta.type == 'source' ? Source.fromJson(obj) : null,
+
       capture: meta.type == 'capture'
           ? Capture.fromJson({...obj, 'receipts': j['receipts']})
           : null,
@@ -946,6 +967,16 @@ class Health {
 
   /// Whether POST /v1/transcribe is available (a dictation model is set).
   final bool dictation;
+
+  /// A search backend is configured: research can run.
+  final bool research;
+
+  /// Nightly maintenance: enabled, running now, next run.
+  final HealthMaintenance maintenance;
+
+  /// An embedding model is configured: semantic search and duplicates.
+  final bool embedding;
+
   const Health({
     this.ok = false,
     this.version = '',
@@ -960,6 +991,9 @@ class Health {
     this.configuredChat = '',
     this.instance = '',
     this.dictation = false,
+    this.research = false,
+    this.maintenance = const HealthMaintenance(),
+    this.embedding = false,
   });
   factory Health.fromJson(Map<String, dynamic> j) => Health(
     ok: _bool(j['ok']),
@@ -973,6 +1007,10 @@ class Health {
     setupNeeded: _bool(j['setup_needed']),
     instance: _str(j['instance']),
     dictation: _bool(j['dictation']),
+    research: _bool(j['research']),
+    maintenance: HealthMaintenance.fromJson(j['maintenance']),
+    embedding: _bool(j['embedding']),
+
     configuredTriage: j['configured'] is Map
         ? _str((j['configured'] as Map)['triage'])
         : _str(j['triage']),
@@ -1097,6 +1135,14 @@ class ServerSettings {
 
   /// Dictation model; an empty model means dictation is off.
   final RoleRef dictation;
+
+  /// Research: model, search backend and its credentials.
+  final ResearchSettings research;
+
+  /// Nightly maintenance schedule and jobs; the embedding model.
+  final MaintenanceSettings maintenance;
+  final EmbeddingSettings embedding;
+
   final Autonomy autonomy;
   final Map<String, ProviderInfo> providers;
   const ServerSettings({
@@ -1108,6 +1154,10 @@ class ServerSettings {
     this.triage = const RoleRef(),
     this.chat = const RoleRef(),
     this.dictation = const RoleRef(),
+    this.research = const ResearchSettings(),
+    this.maintenance = const MaintenanceSettings(),
+    this.embedding = const EmbeddingSettings(),
+
     this.autonomy = const Autonomy(),
     this.providers = const {},
   });
@@ -1129,6 +1179,10 @@ class ServerSettings {
       triage: RoleRef.fromJson(j['triage']),
       chat: RoleRef.fromJson(j['chat']),
       dictation: RoleRef.fromJson(j['dictation']),
+      research: ResearchSettings.fromJson(j['research']),
+      maintenance: MaintenanceSettings.fromJson(j['maintenance']),
+      embedding: EmbeddingSettings.fromJson(j['embedding']),
+
       autonomy: Autonomy.fromJson(j['autonomy']),
       providers: provs,
     );
@@ -1190,6 +1244,9 @@ class ModelList {
   /// Suggested dictation model; empty when the provider cannot transcribe.
   final String suggestedTranscribe;
 
+  /// Suggested embedding model; empty when the provider has none.
+  final String suggestedEmbed;
+
   /// Set when the provider could not be listed (e.g. Ollama not running).
   final String error;
   const ModelList({
@@ -1197,6 +1254,7 @@ class ModelList {
     this.suggestedTriage = '',
     this.suggestedChat = '',
     this.suggestedTranscribe = '',
+    this.suggestedEmbed = '',
     this.error = '',
   });
   bool get ok => error.isEmpty;
@@ -1211,6 +1269,9 @@ class ModelList {
         : '',
     suggestedTranscribe: j['suggested'] is Map
         ? _str((j['suggested'] as Map)['transcribe'])
+        : '',
+    suggestedEmbed: j['suggested'] is Map
+        ? _str((j['suggested'] as Map)['embed'])
         : '',
   );
 }
@@ -1277,6 +1338,7 @@ String captureSourceLabel(String source) => switch (source) {
   'chat' => 'from a conversation',
   'api' => 'from the API',
   'test' => 'from a test',
+  'maintenance' => 'from maintenance',
   '' => '',
   _ => 'from $source',
 };
@@ -1286,4 +1348,356 @@ String captureSourceLabel(String source) => switch (source) {
 String modelLabel(String provider, String model) {
   if (model == 'heuristic' || provider == 'fake') return 'rules';
   return model;
+}
+
+/// Settings → Research: which model researches and which search backend
+/// finds the pages. `braveKeyStatus` mirrors the providers' `key_status`.
+class ResearchSettings {
+  final String provider;
+  final String model;
+  final String backend; // auto | openai | openrouter | brave | searxng
+  final String searchModel;
+  final String searxngUrl;
+  final String braveKeyStatus; // none | set | env
+  final bool available;
+
+  /// Research starts by itself when triage files a research task.
+  final bool auto;
+  const ResearchSettings({
+    this.provider = '',
+    this.model = '',
+    this.backend = 'auto',
+    this.searchModel = '',
+    this.searxngUrl = '',
+    this.braveKeyStatus = 'none',
+    this.available = false,
+    this.auto = true,
+  });
+  factory ResearchSettings.fromJson(dynamic v) {
+    if (v is! Map<String, dynamic>) return const ResearchSettings();
+    return ResearchSettings(
+      provider: _str(v['provider']),
+      model: _str(v['model']),
+      backend: _str(v['backend'], 'auto'),
+      searchModel: _str(v['search_model']),
+      searxngUrl: _str(v['searxng_url']),
+      braveKeyStatus: _str(v['brave_key_status'], 'none'),
+      available: _bool(v['available']),
+      auto: v['auto'] is bool ? v['auto'] as bool : true,
+    );
+  }
+  bool get braveKeySet => braveKeyStatus == 'set' || braveKeyStatus == 'env';
+}
+
+/// A fetched web page that a research note cites (`[[src_…]]`).
+class Source {
+  final Meta meta;
+  final String url;
+  final String title;
+  final DateTime? fetchedAt;
+  final String excerpt;
+  const Source({
+    required this.meta,
+    this.url = '',
+    this.title = '',
+    this.fetchedAt,
+    this.excerpt = '',
+  });
+  factory Source.fromJson(Map<String, dynamic> j) => Source(
+    meta: Meta.fromJson(j),
+    url: _str(j['url']),
+    title: _str(j['title']),
+    fetchedAt: _date(j['fetched_at']),
+    excerpt: _str(j['excerpt']),
+  );
+  String get id => meta.id;
+
+  /// The host, for a compact line when the title is missing.
+  String get host => Uri.tryParse(url)?.host ?? '';
+}
+
+/// `POST /v1/research` answer.
+class ResearchStatus {
+  final String taskId;
+  final String status; // running
+  const ResearchStatus({required this.taskId, this.status = ''});
+  factory ResearchStatus.fromJson(Map<String, dynamic> j) =>
+      ResearchStatus(taskId: _str(j['task_id']), status: _str(j['status']));
+}
+
+/// One `research.progress` event.
+class ResearchProgress {
+  final String taskId;
+  final String step; // search fetch read store done error
+  final String summary;
+  final String noteId;
+  final int sources;
+  const ResearchProgress({
+    required this.taskId,
+    required this.step,
+    this.summary = '',
+    this.noteId = '',
+    this.sources = 0,
+  });
+  factory ResearchProgress.fromJson(Map<String, dynamic> j) => ResearchProgress(
+    taskId: _str(j['task_id']),
+    step: _str(j['step']),
+    summary: _str(j['summary']),
+    noteId: _str(j['note_id']),
+    sources: _int(j['sources']),
+  );
+  bool get running => step != 'done' && step != 'error';
+
+  /// The inline progress line under a task header.
+  String get line => switch (step) {
+    'search' => summary.isEmpty ? 'Searching…' : 'Searching: $summary',
+    'fetch' => summary.isEmpty ? 'Fetching…' : 'Fetching $summary',
+    'read' => summary.isEmpty ? 'Reading…' : 'Reading $summary',
+    'store' => 'Writing the note…',
+    'done' => 'Done.',
+    'error' => summary.isEmpty ? 'Research failed.' : summary,
+    _ => summary.isEmpty ? 'Researching…' : summary,
+  };
+}
+
+/// Older daemons marked research tasks by a text prefix only.
+bool isResearchTask(String text) =>
+    text.trimLeft().toLowerCase().startsWith('research:');
+
+extension TaskKind on Task {
+  /// A task the daemon researches: `kind: research` (any language), or the
+  /// old "Research:" prefix in existing data.
+  bool get isResearch => kind == 'research' || isResearchTask(text);
+}
+
+/// Health → maintenance: enabled, running now, next run.
+class HealthMaintenance {
+  final bool enabled;
+  final bool running;
+  final DateTime? next;
+  const HealthMaintenance({
+    this.enabled = false,
+    this.running = false,
+    this.next,
+  });
+  factory HealthMaintenance.fromJson(dynamic v) {
+    if (v is! Map<String, dynamic>) return const HealthMaintenance();
+    return HealthMaintenance(
+      enabled: _bool(v['enabled']),
+      running: _bool(v['running']),
+      next: _date(v['next']),
+    );
+  }
+}
+
+/// Settings → Maintenance. `every` hours; 0 means daily at `at` (HH:MM).
+class MaintenanceSettings {
+  final bool enabled;
+  final String at;
+  final int every;
+  final bool integrity;
+  final bool untagged;
+  final bool duplicates;
+  final bool summaries;
+  final String assist; // off | propose | auto
+  final int untaggedAfterDays;
+  final int keepRuns;
+  const MaintenanceSettings({
+    this.enabled = false,
+    this.at = '03:30',
+    this.every = 0,
+    this.integrity = true,
+    this.untagged = true,
+    this.duplicates = true,
+    this.summaries = true,
+    this.assist = 'off',
+    this.untaggedAfterDays = 3,
+    this.keepRuns = 30,
+  });
+  factory MaintenanceSettings.fromJson(dynamic v) {
+    if (v is! Map<String, dynamic>) return const MaintenanceSettings();
+    return MaintenanceSettings(
+      enabled: _bool(v['enabled']),
+      at: _str(v['at'], '03:30'),
+      every: _int(v['every']),
+      integrity: _bool(v['integrity']),
+      untagged: _bool(v['untagged']),
+      duplicates: _bool(v['duplicates']),
+      summaries: _bool(v['summaries']),
+      assist: _str(v['assist'], 'off'),
+      untaggedAfterDays: _int(v['untagged_after_days']),
+      keepRuns: _int(v['keep_runs']),
+    );
+  }
+
+  /// "Daily at 03:30" or "Every 6 h".
+  String get scheduleLabel => every > 0 ? 'Every $every h' : 'Daily at $at';
+}
+
+/// Settings → embedding model (semantic search, duplicate detection).
+class EmbeddingSettings {
+  final String provider;
+  final String model;
+  final bool available;
+  const EmbeddingSettings({
+    this.provider = '',
+    this.model = '',
+    this.available = false,
+  });
+  factory EmbeddingSettings.fromJson(dynamic v) {
+    if (v is! Map<String, dynamic>) return const EmbeddingSettings();
+    return EmbeddingSettings(
+      provider: _str(v['provider']),
+      model: _str(v['model']),
+      available: _bool(v['available']),
+    );
+  }
+}
+
+/// One job of a maintenance run.
+class MaintenanceJob {
+  final String name;
+  final int checked;
+  final int changed;
+  final int proposed;
+  final List<String> notes;
+  final String error;
+  final bool skipped;
+  const MaintenanceJob({
+    required this.name,
+    this.checked = 0,
+    this.changed = 0,
+    this.proposed = 0,
+    this.notes = const [],
+    this.error = '',
+    this.skipped = false,
+  });
+  factory MaintenanceJob.fromJson(Map<String, dynamic> j) => MaintenanceJob(
+    name: _str(j['name']),
+    checked: _int(j['checked']),
+    changed: _int(j['changed']),
+    proposed: _int(j['proposed']),
+    notes: _strs(j['notes']),
+    error: _str(j['error']),
+    skipped: _bool(j['skipped']),
+  );
+
+  /// Human name for a job key.
+  String get label => switch (name) {
+    'integrity' => 'Integrity',
+    'untagged' => 'Untagged',
+    'duplicates' => 'Duplicates',
+    'summaries' => 'Summaries',
+    'assist' => 'Open tasks',
+    _ => name,
+  };
+}
+
+class MaintenanceRun {
+  final String id;
+  final String trigger; // schedule | manual
+  final DateTime? started;
+  final DateTime? finished;
+  final List<MaintenanceJob> jobs;
+  const MaintenanceRun({
+    required this.id,
+    this.trigger = '',
+    this.started,
+    this.finished,
+    this.jobs = const [],
+  });
+  factory MaintenanceRun.fromJson(Map<String, dynamic> j) => MaintenanceRun(
+    id: _str(j['id']),
+    trigger: _str(j['trigger']),
+    started: _date(j['started']),
+    finished: _date(j['finished']),
+    jobs: j['jobs'] is List
+        ? (j['jobs'] as List)
+              .whereType<Map<String, dynamic>>()
+              .map(MaintenanceJob.fromJson)
+              .toList()
+        : const [],
+  );
+}
+
+/// GET /v1/maintenance.
+class MaintenanceStatus {
+  final bool enabled;
+  final bool running;
+  final DateTime? next;
+  final MaintenanceRun? last;
+  final List<MaintenanceRun> runs;
+  const MaintenanceStatus({
+    this.enabled = false,
+    this.running = false,
+    this.next,
+    this.last,
+    this.runs = const [],
+  });
+  factory MaintenanceStatus.fromJson(Map<String, dynamic> j) =>
+      MaintenanceStatus(
+        enabled: _bool(j['enabled']),
+        running: _bool(j['running']),
+        next: _date(j['next']),
+        last: j['last'] is Map<String, dynamic>
+            ? MaintenanceRun.fromJson(j['last'] as Map<String, dynamic>)
+            : null,
+        runs: j['runs'] is List
+            ? (j['runs'] as List)
+                  .whereType<Map<String, dynamic>>()
+                  .map(MaintenanceRun.fromJson)
+                  .toList()
+            : const [],
+      );
+}
+
+/// One `maintenance.progress` event.
+class MaintenanceProgress {
+  final String runId;
+  final String job;
+  final String summary;
+  final bool done;
+  const MaintenanceProgress({
+    required this.runId,
+    this.job = '',
+    this.summary = '',
+    this.done = false,
+  });
+  factory MaintenanceProgress.fromJson(Map<String, dynamic> j) =>
+      MaintenanceProgress(
+        runId: _str(j['run_id']),
+        job: _str(j['job']),
+        summary: _str(j['summary']),
+        done: _bool(j['done']),
+      );
+}
+
+/// "today 03:30", "tomorrow 03:30", else "Mon, 7 Sep 03:30".
+String nextRunLabel(DateTime? t, {DateTime? now}) {
+  if (t == null) return '';
+  final l = t.toLocal();
+  final n = (now ?? DateTime.now()).toLocal();
+  final d0 = DateTime(l.year, l.month, l.day);
+  final n0 = DateTime(n.year, n.month, n.day);
+  final hm =
+      '${l.hour.toString().padLeft(2, '0')}:${l.minute.toString().padLeft(2, '0')}';
+  final diff = d0.difference(n0).inDays;
+  if (diff == 0) return 'today $hm';
+  if (diff == 1) return 'tomorrow $hm';
+  const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const months = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ];
+  return '${days[l.weekday - 1]}, ${l.day} ${months[l.month - 1]} $hm';
 }

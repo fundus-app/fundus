@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -49,6 +51,7 @@ class AppShell extends StatefulWidget {
 class _AppShellState extends State<AppShell> {
   final _captureFocus = FocusNode();
   final _captureBar = GlobalKey<CaptureBarState>();
+  StreamSubscription<AppNotice>? _notices;
   final _chatFocus = FocusNode();
   final _searchFocus = FocusNode();
   final _searchCtrl = TextEditingController();
@@ -59,6 +62,7 @@ class _AppShellState extends State<AppShell> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final state = context.read<AppState>();
+      _notices = state.notices.listen(_onNotice);
       final v = AppView.values
           .where((v) => v.name == widget.initialView)
           .firstOrNull;
@@ -82,6 +86,7 @@ class _AppShellState extends State<AppShell> {
 
   @override
   void dispose() {
+    _notices?.cancel();
     _captureFocus.dispose();
     _chatFocus.dispose();
     _searchFocus.dispose();
@@ -96,6 +101,27 @@ class _AppShellState extends State<AppShell> {
       _chatFocus.requestFocus();
     } else {
       _captureFocus.requestFocus();
+    }
+  }
+
+  void _onNotice(AppNotice n) {
+    if (!mounted) return;
+    if (n.error) {
+      showToast(context, n.text, error: true);
+    } else if (n.noteId.isNotEmpty) {
+      showToast(
+        context,
+        n.text,
+        key: 'note:${n.noteId}',
+        actionLabel: 'Open note',
+        settledText: '',
+        onAction: () async {
+          await _open(n.noteId);
+          return true;
+        },
+      );
+    } else {
+      showToast(context, n.text);
     }
   }
 

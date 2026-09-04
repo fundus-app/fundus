@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:record/record.dart';
 
 import '../api/client.dart';
@@ -15,7 +16,90 @@ abstract class Recorder {
 
 const dictationSampleRate = 16000;
 
-/// The `record` package (Linux: parecord/ffmpeg, macOS/Windows/web native).
+/// The microphone for this platform: PulseAudio through the Linux runner
+/// (no helper binaries, so it works in Flatpak and Snap), the `record`
+/// package everywhere else.
+Recorder platformRecorder() =>
+    !kIsWeb && defaultTargetPlatform == TargetPlatform.linux
+    ? LinuxPulseRecorder()
+    : PackageRecorder();
+
+/// Linux: the runner's PulseAudio channel (see linux/runner/pulse_recorder.cc).
+/// Chunks of S16LE 16 kHz mono arrive as "chunk" calls while recording.
+class LinuxPulseRecorder implements Recorder {
+  LinuxPulseRecorder({MethodChannel? channel})
+    : _channel = channel ?? const MethodChannel(channelName) {
+    _channel.setMethodCallHandler(_onCall);
+  }
+  static const channelName = 'dev.fundus.app/recorder';
+  final MethodChannel _channel;
+  StreamController<Uint8List>? _ctrl;
+
+  Future<dynamic> _onCall(MethodCall call) async {
+    switch (call.method) {
+      case 'chunk':
+        final data = call.arguments;
+        if (data is Uint8List && _ctrl != null && !_ctrl!.isClosed) {
+          _ctrl!.add(data);
+        }
+      case 'error':
+        if (_ctrl != null && !_ctrl!.isClosed) {
+          _ctrl!.addError(
+            StateError('${call.arguments ?? 'recording failed'}'),
+          );
+        }
+    }
+    return null;
+  }
+
+  /// Linux has no permission prompt of its own; a sandbox portal, if any,
+  /// answers when the stream opens.
+  @override
+  Future<bool> hasPermission() async => true;
+
+  @override
+  Future<Stream<Uint8List>> start() async {
+    await stop();
+    final ctrl = StreamController<Uint8List>();
+    _ctrl = ctrl;
+    try {
+      await _channel.invokeMethod<void>('start');
+    } catch (_) {
+      _ctrl = null;
+      // Never listened to: closing must not wait for a subscriber.
+      ctrl.stream.listen(null);
+      unawaited(ctrl.close());
+      rethrow;
+    }
+    return ctrl.stream;
+  }
+
+  @override
+  Future<void> stop() async {
+    final ctrl = _ctrl;
+    if (ctrl == null) return;
+    _ctrl = null;
+    try {
+      await _channel.invokeMethod<void>('stop');
+    } catch (_) {
+      // Nothing to stop when the runner never started.
+    }
+    if (!ctrl.isClosed) {
+      if (!ctrl.hasListener) {
+        ctrl.stream.listen(null);
+      }
+      await ctrl.close();
+    }
+  }
+
+  @override
+  Future<void> dispose() async {
+    await stop();
+    _channel.setMethodCallHandler(null);
+  }
+}
+
+/// The `record` package (macOS/Windows/web native backends).
 class PackageRecorder implements Recorder {
   // Created on first use: the plugin channel does not exist in widget tests
   // and an idle app should not touch the audio stack.
@@ -92,7 +176,7 @@ class DictationController extends ChangeNotifier {
     this.api, {
     Recorder? recorder,
     this.maxBytes = 25 * 1024 * 1024,
-  }) : _recorder = recorder ?? PackageRecorder();
+  }) : _recorder = recorder ?? platformRecorder();
 
   final FundusApi api;
   final Recorder _recorder;

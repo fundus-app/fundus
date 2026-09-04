@@ -6,7 +6,6 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../api/client.dart';
 import '../../api/models.dart';
 import '../../state/app_state.dart';
-import '../settings_screen.dart' show showSaved;
 import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/toasts.dart';
@@ -519,6 +518,7 @@ class _SetupWizardState extends State<SetupWizard> {
   }
 
   Widget _providerStep() {
+    final theme = Theme.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -533,6 +533,25 @@ class _SetupWizardState extends State<SetupWizard> {
               onTap: () => _pick(c),
             ),
           ),
+        Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: Center(
+            child: LinkedText(
+              key: const Key('wizard-footer'),
+              style: theme.textTheme.labelSmall,
+              parts: [
+                TextPart(
+                  'fundus-app.de',
+                  onTap: () => launchUrl(
+                    Uri.parse('https://fundus-app.de'),
+                    mode: LaunchMode.externalApplication,
+                  ),
+                ),
+                const TextPart(' · AGPL-3.0'),
+              ],
+            ),
+          ),
+        ),
       ],
     );
   }
@@ -932,6 +951,7 @@ class RoleModelPicker extends StatefulWidget {
     required this.onChanged,
     this.recommended = '',
     this.hint = '',
+    this.onSubmitted,
   });
   final String label;
   final String hint;
@@ -939,6 +959,10 @@ class RoleModelPicker extends StatefulWidget {
   final String recommended;
   final String value;
   final ValueChanged<String> onChanged;
+
+  /// Enter, a pick from the list, or leaving the field: settings screens
+  /// save here.
+  final ValueChanged<String>? onSubmitted;
   @override
   State<RoleModelPicker> createState() => _RoleModelPickerState();
 }
@@ -1001,6 +1025,7 @@ class _RoleModelPickerState extends State<RoleModelPicker> {
           onSelected: (m) {
             _ctrl.text = m;
             widget.onChanged(m);
+            widget.onSubmitted?.call(m);
           },
           fieldViewBuilder: (context, ctrl, focus, onSubmit) => TextField(
             controller: ctrl,
@@ -1017,7 +1042,10 @@ class _RoleModelPickerState extends State<RoleModelPicker> {
                   : null,
             ),
             onChanged: widget.onChanged,
-            onSubmitted: (_) => onSubmit(),
+            onSubmitted: (v) {
+              onSubmit();
+              widget.onSubmitted?.call(v);
+            },
           ),
           optionsViewBuilder: (context, onSelected, options) => Align(
             alignment: Alignment.topLeft,
@@ -1180,413 +1208,3 @@ class _ProviderCard extends StatelessWidget {
 
 // ---------------------------------------------------------------------------
 // Settings sections
-
-/// "Model & provider" for the Settings screen: current binding, key status,
-/// replace key + test, or run the wizard again. Saves on change.
-class ProviderSection extends StatefulWidget {
-  const ProviderSection({super.key});
-  @override
-  State<ProviderSection> createState() => _ProviderSectionState();
-}
-
-class _ProviderSectionState extends State<ProviderSection> {
-  ServerSettings? _s;
-  Object? _error;
-  bool _wizard = false;
-  ProbeResult? _probe;
-  bool _busy = false;
-  final _key = TextEditingController();
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  @override
-  void dispose() {
-    _key.dispose();
-    super.dispose();
-  }
-
-  Future<void> _load() async {
-    try {
-      final s = await context.read<AppState>().api.settings();
-      if (mounted) setState(() => _s = s);
-    } catch (e) {
-      if (mounted) setState(() => _error = e);
-    }
-  }
-
-  Future<void> _saveKeyAndTest() async {
-    final s = _s;
-    if (s == null) return;
-    setState(() {
-      _busy = true;
-      _probe = null;
-      _error = null;
-    });
-    final api = context.read<AppState>().api;
-    try {
-      if (_key.text.trim().isNotEmpty) {
-        _s = await api.updateSettings({
-          'providers': {
-            s.triage.provider: {'api_key': _key.text.trim()},
-          },
-        });
-        _key.clear();
-        if (mounted) showSaved(context);
-      }
-      final p = await api.testProvider(
-        s.triage.provider,
-        model: s.triage.model,
-      );
-      setState(() => _probe = p);
-    } catch (e) {
-      setState(() => _error = e);
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final s = _s;
-    if (_wizard) {
-      return SetupWizard(
-        embedded: true,
-        onDone: () {
-          setState(() => _wizard = false);
-          _load();
-        },
-      );
-    }
-    if (s == null) {
-      return _error != null
-          ? Text(describeError(_error!), style: theme.textTheme.bodySmall)
-          : const LinearProgressIndicator(minHeight: 2);
-    }
-    final prov = s.provider(s.triage.provider);
-    final mono = monoStyle(
-      context,
-      size: 12.5,
-      color: theme.colorScheme.onSurface,
-    );
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        if (s.setupNeeded || s.triage.provider.isEmpty)
-          Text(
-            'No model connected yet. Captures wait in the inbox.',
-            style: theme.textTheme.bodyMedium,
-          )
-        else ...[
-          Text(
-            'Filing model: ${modelDisplay(s.triage.provider, s.triage.model)}',
-            style: mono,
-          ),
-          Text(
-            'Conversation model: ${modelDisplay(s.chat.provider, s.chat.model)}',
-            style: mono,
-          ),
-          Text(
-            s.dictation.model.isEmpty
-                ? 'Dictation: not available with ${providerTitle(s.triage.provider)}'
-                : 'Dictation: ${modelDisplay(s.dictation.provider, s.dictation.model)}',
-            style: mono,
-          ),
-          if (s.triage.provider == 'ollama') ...[
-            const SizedBox(height: 8),
-            _OllamaAddress(current: prov?.baseUrl ?? '', onSaved: _load),
-          ],
-          if (prov != null && prov.needsKey)
-            Text(
-              prov.hasKey
-                  ? 'Key ${prov.keyStatus == 'env' ? 'from the environment' : 'stored, ends with ${prov.keyHint}'}'
-                  : 'No key stored',
-              style: theme.textTheme.labelSmall,
-            ),
-        ],
-        const SizedBox(height: 10),
-        if (prov != null && prov.needsKey) ...[
-          TextField(
-            controller: _key,
-            obscureText: true,
-            onChanged: (_) => setState(() {}),
-            onSubmitted: (_) => _saveKeyAndTest(),
-            decoration: InputDecoration(
-              labelText: 'Replace ${providerTitle(prov.name)} key',
-              hintText: 'sk-…',
-              isDense: true,
-            ),
-          ),
-          const SizedBox(height: 8),
-        ],
-        Row(
-          children: [
-            if (prov != null && !s.setupNeeded)
-              FilledButton.tonal(
-                onPressed: _busy ? null : _saveKeyAndTest,
-                child: Text(
-                  _busy
-                      ? 'Testing…'
-                      : (_key.text.trim().isEmpty
-                            ? 'Test connection'
-                            : 'Save and test'),
-                ),
-              ),
-            const SizedBox(width: 8),
-            OutlinedButton(
-              onPressed: () => setState(() => _wizard = true),
-              child: Text(
-                s.setupNeeded ? 'Connect a model' : 'Change provider or model',
-              ),
-            ),
-          ],
-        ),
-        if (_probe != null) ...[
-          const SizedBox(height: 10),
-          ProbeView(probe: _probe!),
-        ],
-        if (_error != null)
-          Padding(
-            padding: const EdgeInsets.only(top: 8),
-            child: Text(
-              describeError(_error!),
-              style: theme.textTheme.bodySmall!.copyWith(
-                color: theme.colorScheme.error,
-              ),
-            ),
-          ),
-        Text(
-          'Configuration file: ${s.path}',
-          style: theme.textTheme.labelSmall,
-        ),
-      ],
-    );
-  }
-}
-
-/// Autonomy toggles and time zone, saved on change via PUT /v1/settings.
-class AutonomySection extends StatefulWidget {
-  const AutonomySection({super.key});
-  @override
-  State<AutonomySection> createState() => _AutonomySectionState();
-}
-
-class _AutonomySectionState extends State<AutonomySection> {
-  ServerSettings? _s;
-  Autonomy? _a;
-  late final TextEditingController _tz = TextEditingController();
-  late final TextEditingController _topics = TextEditingController();
-  Object? _error;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  @override
-  void dispose() {
-    _tz.dispose();
-    _topics.dispose();
-    super.dispose();
-  }
-
-  Future<void> _load() async {
-    try {
-      final s = await context.read<AppState>().api.settings();
-      if (mounted) {
-        setState(() {
-          _s = s;
-          _a = s.autonomy;
-          _tz.text = s.timezone;
-          _topics.text = '${s.autonomy.maxNewTopicsPerCapture}';
-        });
-      }
-    } catch (e) {
-      if (mounted) setState(() => _error = e);
-    }
-  }
-
-  Future<void> _save(Map<String, dynamic> patch) async {
-    setState(() => _error = null);
-    try {
-      final s = await context.read<AppState>().api.updateSettings(patch);
-      if (mounted) {
-        setState(() {
-          _s = s;
-          _a = s.autonomy;
-        });
-        showSaved(context);
-        context.read<AppState>().checkHealth();
-      }
-    } catch (e) {
-      if (mounted) setState(() => _error = e);
-    }
-  }
-
-  void _saveAutonomy(Autonomy a) {
-    setState(() => _a = a);
-    _save({'autonomy': a.toJson()});
-  }
-
-  void _saveTopics() {
-    final n = int.tryParse(_topics.text.trim());
-    final a = _a;
-    if (n == null || a == null || n == a.maxNewTopicsPerCapture) return;
-    _saveAutonomy(a.copyWith(maxNewTopicsPerCapture: n));
-  }
-
-  void _saveTimezone() {
-    final tz = _tz.text.trim();
-    if (tz == (_s?.timezone ?? '')) return;
-    _save({'timezone': tz});
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final a = _a;
-    if (a == null) {
-      return _error != null
-          ? Text(describeError(_error!), style: theme.textTheme.bodySmall)
-          : const LinearProgressIndicator(minHeight: 2);
-    }
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        SwitchListTile(
-          contentPadding: EdgeInsets.zero,
-          dense: true,
-          title: const Text('Create notes and tasks without asking'),
-          subtitle: Text(
-            'Off: every capture waits in the inbox as a proposal.',
-            style: theme.textTheme.labelSmall,
-          ),
-          value: a.autoCreate,
-          onChanged: (v) => _saveAutonomy(a.copyWith(autoCreate: v)),
-        ),
-        Text(
-          'Park captures below ${(a.minConfidence * 100).round()}% confidence',
-          style: theme.textTheme.bodyMedium,
-        ),
-        Slider(
-          value: a.minConfidence.clamp(0, 1),
-          min: 0,
-          max: 1,
-          divisions: 20,
-          label: '${(a.minConfidence * 100).round()}%',
-          onChanged: (v) => setState(() => _a = a.copyWith(minConfidence: v)),
-          onChangeEnd: (v) => _saveAutonomy(a.copyWith(minConfidence: v)),
-        ),
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                'Topics the model may create per capture',
-                style: theme.textTheme.bodyMedium,
-              ),
-            ),
-            SizedBox(
-              width: 72,
-              child: Focus(
-                onFocusChange: (f) {
-                  if (!f) _saveTopics();
-                },
-                child: TextField(
-                  controller: _topics,
-                  keyboardType: TextInputType.number,
-                  textAlign: TextAlign.center,
-                  decoration: const InputDecoration(isDense: true),
-                  onSubmitted: (_) => _saveTopics(),
-                ),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 10),
-        Focus(
-          onFocusChange: (f) {
-            if (!f) _saveTimezone();
-          },
-          child: TextField(
-            controller: _tz,
-            decoration: const InputDecoration(
-              labelText: 'Time zone, e.g. Europe/Berlin',
-              isDense: true,
-            ),
-            onSubmitted: (_) => _saveTimezone(),
-          ),
-        ),
-        if (_error != null)
-          Padding(
-            padding: const EdgeInsets.only(top: 8),
-            child: Text(
-              describeError(_error!),
-              style: theme.textTheme.bodySmall!.copyWith(
-                color: theme.colorScheme.error,
-              ),
-            ),
-          ),
-      ],
-    );
-  }
-}
-
-/// Ollama address for the settings screen; saves on submit or blur.
-class _OllamaAddress extends StatefulWidget {
-  const _OllamaAddress({required this.current, required this.onSaved});
-  final String current;
-  final VoidCallback onSaved;
-  @override
-  State<_OllamaAddress> createState() => _OllamaAddressState();
-}
-
-class _OllamaAddressState extends State<_OllamaAddress> {
-  late final TextEditingController _ctrl = TextEditingController(
-    text: widget.current,
-  );
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  Future<void> _save() async {
-    final url = _ctrl.text.trim();
-    if (url.isEmpty || url == widget.current) return;
-    try {
-      await context.read<AppState>().api.updateSettings({
-        'providers': {
-          'ollama': {'base_url': url},
-        },
-      });
-      if (mounted) {
-        showSaved(context);
-        widget.onSaved();
-      }
-    } catch (e) {
-      if (mounted) showError(context, e);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) => Focus(
-    onFocusChange: (f) {
-      if (!f) _save();
-    },
-    child: TextField(
-      key: const Key('ollama-url'),
-      controller: _ctrl,
-      decoration: const InputDecoration(
-        labelText: 'Ollama address',
-        hintText: 'http://127.0.0.1:11434/v1',
-        isDense: true,
-      ),
-      onSubmitted: (_) => _save(),
-    ),
-  );
-}

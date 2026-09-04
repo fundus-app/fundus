@@ -166,6 +166,9 @@ func renderReceipt(txn *model.Txn, lookup, before func(string) model.Object) *mo
 		case "task.create":
 			// One sentence: Created task “X” in Fundus, due Fri 12 Sep, deferred to later.
 			text = fmt.Sprintf("Created task “%s”", name())
+			if op.Kind == string(model.TaskKindResearch) {
+				text = fmt.Sprintf("Created research task “%s”", name())
+			}
 			if tn := topicNames(op.Topics); tn != "" {
 				text += " in " + tn
 			}

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/fundus-app/fundus/internal/research"
 	"io"
 	"log/slog"
 	"mime/multipart"
@@ -28,6 +29,7 @@ import (
 )
 
 type env struct {
+	s    *Server
 	srv  *httptest.Server
 	core *core.Core
 	cfg  *config.Config
@@ -64,7 +66,7 @@ func newEnv(t *testing.T, token string, mods ...func(*config.Config)) *env {
 	s := New(c, cfg, w, tr, ch, reg, quiet)
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(func() { ts.Close(); cancel(); c.Close() })
-	return &env{srv: ts, core: c, cfg: cfg}
+	return &env{srv: ts, core: c, cfg: cfg, s: s}
 }
 
 func (e *env) call(t *testing.T, method, path string, body any, headers map[string]string) (int, []byte) {
@@ -681,4 +683,82 @@ func TestTranscribeEndpoint(t *testing.T) {
 	if res.StatusCode != 503 {
 		t.Fatalf("dictation off: %d", res.StatusCode)
 	}
+}
+
+func TestResearchEndpoint(t *testing.T) {
+	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, "<html><head><title>Go 1.27 is released</title></head><body><main><p>Go 1.27 was released in August 2026. "+strings.Repeat("Details. ", 80)+"</p></main></body></html>")
+	}))
+	defer page.Close()
+	calls := 0
+	fake := &llm.Fake{ProviderName: "openai", Fn: func(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+		calls++
+		if req.Schema != nil {
+			return &llm.Response{Content: `{"answer":"Go 1.27 is current [1].","findings":[{"claim":"Go 1.27 released August 2026","sources":[1]}],"uncertainties":[],"confidence":0.9}`}, nil
+		}
+		switch calls {
+		case 1:
+			return &llm.Response{ToolCalls: []llm.ToolCall{{ID: "c1", Name: "web_search", Args: json.RawMessage(`{"query":"go latest version"}`)}}}, nil
+		case 2:
+			return &llm.Response{ToolCalls: []llm.ToolCall{{ID: "c2", Name: "fetch_page", Args: json.RawMessage(`{"url":"` + page.URL + `/"}`)}}}, nil
+		}
+		return &llm.Response{Content: "DONE"}, nil
+	}, SearchFn: func(ctx context.Context, model, query string, n int) ([]llm.SearchResult, error) {
+		return []llm.SearchResult{{URL: page.URL + "/", Title: "Go release"}}, nil
+	}}
+	e := newEnv(t, "", func(cfg *config.Config) {
+		cfg.Providers["openai"] = config.Provider{Type: "openai", BaseURL: "https://api.openai.com/v1", APIKey: "k", WebSearch: "chat_completions"}
+		cfg.Chat = config.Role{Provider: "openai", Model: "m"}
+	})
+	// Not wired yet: unavailable.
+	code, raw := e.call(t, "POST", "/v1/research", map[string]any{"question": "x"}, nil)
+	if code != 503 {
+		t.Fatalf("without worker: %d %s", code, raw)
+	}
+	rw := research.New(e.core, slog.New(slog.NewTextHandler(io.Discard, nil)), "test")
+	rw.Fetcher.Client = &http.Client{Timeout: 5 * time.Second} // loopback pages for the test
+	e.s.SetResearch(rw)
+	// configureRuntime built the searcher from the registry's provider, which
+	// is a real OpenAI adapter; swap in the fake for the test.
+	rw.Configure(fake, e.cfg.ResearchRole(), e.cfg.Research, research.NewSearcher(e.cfg, fake, nil))
+	code, raw = e.call(t, "GET", "/v1/health", nil, nil)
+	if !strings.Contains(string(raw), `"research":true`) {
+		t.Fatalf("health: %s", raw)
+	}
+	code, raw = e.call(t, "POST", "/v1/research", map[string]any{"question": "What is the latest Go version?"}, nil)
+	if code != 202 {
+		t.Fatalf("start: %d %s", code, raw)
+	}
+	var started struct {
+		TaskID string `json:"task_id"`
+	}
+	_ = json.Unmarshal(raw, &started)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		obj, err := e.core.Get(started.TaskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		task := obj.(*model.Task)
+		if task.State == model.TaskDone {
+			if len(task.Notes) != 1 {
+				t.Fatalf("task notes %v", task.Notes)
+			}
+			note, _ := e.core.Get(task.Notes[0])
+			if md := note.(*model.Note).Body.Markdown(); !strings.Contains(md, "[!external] Go 1.27 is current [1].") || !strings.Contains(md, "[[src_") {
+				t.Fatalf("note:\n%s", md)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("research did not finish; state %s", task.State)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	code, raw = e.call(t, "POST", "/v1/research", map[string]any{"task_id": started.TaskID}, nil)
+	if code != 409 {
+		t.Fatalf("done task: %d %s", code, raw)
+	}
+	rw.Stop()
 }

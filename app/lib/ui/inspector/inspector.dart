@@ -1,13 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../api/models.dart';
 import '../../state/app_state.dart';
 import '../blocks/block_renderer.dart';
 import '../blocks/ref_labels.dart';
 import '../theme.dart';
-import '../views/list_views.dart' show deleteObject;
+import '../views/list_views.dart'
+    show deleteObject, researchMenuItem, researchTask;
 import '../widgets/common.dart';
 import '../widgets/toasts.dart';
 
@@ -131,6 +133,19 @@ class _Primer extends StatelessWidget {
               Text(
                 'Notes, ideas, tasks and topics appear on the left as you go. Nothing you type is ever rewritten; everything the model does can be undone.',
                 style: theme.textTheme.bodySmall,
+              ),
+              const SizedBox(height: 10),
+              LinkedText(
+                style: theme.textTheme.labelSmall,
+                parts: [
+                  TextPart(
+                    'fundus-app.de',
+                    onTap: () => launchUrl(
+                      Uri.parse('https://fundus-app.de'),
+                      mode: LaunchMode.externalApplication,
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
@@ -265,14 +280,17 @@ Future<bool> _confirm(
   return ok == true;
 }
 
-Future<void> _run(BuildContext context, Future<Receipt> Function() fn) async {
+/// Runs a command, toasts its receipt with Undo; false when it failed.
+Future<bool> _run(BuildContext context, Future<Receipt> Function() fn) async {
   try {
     final r = await fn();
     if (context.mounted) {
       showReceiptSnack(context, r, undo: true);
     }
+    return true;
   } catch (e) {
     if (context.mounted) showError(context, e);
+    return false;
   }
 }
 
@@ -472,6 +490,22 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
     text: widget.initial,
   );
   bool _saving = false;
+  bool get _dirty => !sameMarkdown(_ctrl.text, widget.initial);
+
+  /// Esc: leave at once when nothing changed, otherwise ask.
+  Future<void> _cancel() async {
+    if (!_dirty) {
+      widget.onCancel();
+      return;
+    }
+    final ok = await _confirm(
+      context,
+      'Discard your edits?',
+      'The text has changed since you opened the editor.',
+      action: 'Discard',
+    );
+    if (ok && mounted) widget.onCancel();
+  }
 
   @override
   void dispose() {
@@ -496,19 +530,21 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
       bindings: {
         const SingleActivator(LogicalKeyboardKey.enter, control: true): _save,
         const SingleActivator(LogicalKeyboardKey.enter, meta: true): _save,
-        const SingleActivator(LogicalKeyboardKey.escape): widget.onCancel,
+        const SingleActivator(LogicalKeyboardKey.escape): _cancel,
       },
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           TextField(
+            key: const Key('markdown-editor'),
             controller: _ctrl,
             autofocus: true,
-            minLines: 6,
-            maxLines: 40,
+            minLines: 4,
+            maxLines: null,
+            keyboardType: TextInputType.multiline,
             style: monoStyle(
               context,
-              size: 13,
+              size: 15,
               color: theme.colorScheme.onSurface,
             ),
             decoration: const InputDecoration(
@@ -523,10 +559,7 @@ class _MarkdownEditorState extends State<MarkdownEditor> {
                 child: const Text('Save'),
               ),
               const SizedBox(width: 6),
-              TextButton(
-                onPressed: widget.onCancel,
-                child: const Text('Cancel'),
-              ),
+              TextButton(onPressed: _cancel, child: const Text('Cancel')),
               const Spacer(),
               const KeyHint('Ctrl ↵ save'),
               const SizedBox(width: 6),
@@ -865,7 +898,7 @@ class _NoteInspectorState extends State<NoteInspector> {
             itemBuilder: (_) => [
               const PopupMenuItem(
                 value: 'edit_text',
-                child: Text('Edit as Markdown'),
+                child: Text('Edit as text'),
               ),
               PopupMenuItem(
                 value: n.kind == 'idea' ? 'note' : 'idea',
@@ -913,8 +946,11 @@ class _NoteInspectorState extends State<NoteInspector> {
                 setState(() => _editing = false);
                 return;
               }
-              await _run(context, () => state.setNoteMarkdown(n, md.trim()));
-              if (mounted) setState(() => _editing = false);
+              final ok = await _run(
+                context,
+                () => state.setNoteMarkdown(n, md.trim()),
+              );
+              if (ok && mounted) setState(() => _editing = false);
             },
           )
         else
@@ -1018,6 +1054,8 @@ class TaskInspector extends StatelessWidget {
     String v,
   ) async {
     switch (v) {
+      case 'research':
+        await researchTask(context, t);
       case 'link_topic':
         final topic = await _pickTopic(
           context,
@@ -1042,8 +1080,10 @@ class TaskInspector extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = detail.task!;
-    final state = context.read<AppState>();
+    final state = context.watch<AppState>();
     final theme = Theme.of(context);
+    final research = t.isResearch;
+    final progress = state.researchProgress[t.id];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -1056,12 +1096,16 @@ class TaskInspector extends StatelessWidget {
             tooltip: 'Task actions',
             icon: const Icon(Icons.more_horiz_rounded),
             onSelected: (v) => _menu(context, state, t, v),
-            itemBuilder: (_) => const [
-              PopupMenuItem(value: 'link_topic', child: Text('Link to topic…')),
-              PopupMenuDivider(),
-              PopupMenuItem(value: 'copy_id', child: Text('Copy ID')),
-              PopupMenuDivider(),
-              PopupMenuItem(value: 'delete', child: Text('Delete')),
+            itemBuilder: (context) => [
+              if (t.state != 'done') researchMenuItem(context),
+              const PopupMenuItem(
+                value: 'link_topic',
+                child: Text('Link to topic…'),
+              ),
+              const PopupMenuDivider(),
+              const PopupMenuItem(value: 'copy_id', child: Text('Copy ID')),
+              const PopupMenuDivider(),
+              const PopupMenuItem(value: 'delete', child: Text('Delete')),
             ],
           ),
           facts: [
@@ -1085,11 +1129,32 @@ class TaskInspector extends StatelessWidget {
             ),
           ],
         ),
+        if (progress != null) ...[
+          const SizedBox(height: 10),
+          _ResearchLine(progress: progress),
+        ],
         const SectionLabel('Details', top: 20),
         Wrap(
           spacing: 8,
           runSpacing: 8,
+          crossAxisAlignment: WrapCrossAlignment.center,
           children: [
+            if (research && t.state != 'done' && state.researchAvailable)
+              FilledButton.icon(
+                key: const Key('research-button'),
+                style: FilledButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  minimumSize: const Size(0, 32),
+                ),
+                onPressed: progress?.running == true
+                    ? null
+                    : () => researchTask(context, t),
+                icon: const Icon(Icons.travel_explore_rounded, size: 16),
+                label: Text(
+                  progress?.running == true ? 'Researching…' : 'Research this',
+                ),
+              ),
             PopupMenuButton<String>(
               key: const Key('task-state'),
               tooltip: 'State',
@@ -1181,7 +1246,11 @@ class TaskInspector extends StatelessWidget {
           ),
         ],
         if (t.notes.isNotEmpty)
-          _Origins(ids: t.notes, onOpen: onOpen, label: 'Related notes'),
+          _Origins(
+            ids: t.notes,
+            onOpen: onOpen,
+            label: research ? 'Result' : 'Related notes',
+          ),
         _Origins(ids: t.origins, onOpen: onOpen),
         _Backlinks(links: detail.backlinks, onOpen: onOpen),
         _History(receipts: detail.receipts, onOpen: onOpen),
@@ -1239,15 +1308,25 @@ class _TopicInspectorState extends State<TopicInspector> {
             .toList();
         await _run(context, () => state.updateTopic(t, {'aliases': aliases}));
       case 'merge':
-        final survivor = await _pickTopic(context, state, exclude: {t.id});
+        final survivor = await _pickTopic(
+          context,
+          state,
+          exclude: {t.id},
+          title: 'Merge “${t.name}” into which topic?',
+        );
         if (survivor == null || !mounted) return;
+        final page = widget.page;
+        final notes = page?.notes.length ?? 0;
+        final tasks = (page?.tasks.length ?? 0) + (page?.doneTasks.length ?? 0);
+        String n(int c, String w) => '$c $w${c == 1 ? '' : 's'}';
         final ok = await _confirm(
           context,
-          'Merge “${t.name}” into “${survivor.name}”?',
-          'Notes and tasks are relinked, “${t.name}” becomes an alias. This can be undone.',
+          'Move ${n(notes, 'note')} and ${n(tasks, 'task')} from “${t.name}” into “${survivor.name}” and keep “${t.name}” as an alias?',
+          'This can be undone.',
           action: 'Merge',
         );
         if (ok && mounted) {
+          // id = the survivor, from = this topic; the app then shows the survivor.
           await _run(context, () => state.mergeTopic(survivor, t));
         }
       case 'topic':
@@ -1283,7 +1362,7 @@ class _TopicInspectorState extends State<TopicInspector> {
             itemBuilder: (_) => [
               const PopupMenuItem(
                 value: 'summary_text',
-                child: Text('Edit summary as Markdown'),
+                child: Text('Edit summary as text'),
               ),
               const PopupMenuItem(value: 'merge', child: Text('Merge into…')),
               const PopupMenuItem(
@@ -1339,8 +1418,11 @@ class _TopicInspectorState extends State<TopicInspector> {
                 setState(() => _editing = false);
                 return;
               }
-              await _run(context, () => state.setTopicSummary(t, md.trim()));
-              if (mounted) setState(() => _editing = false);
+              final ok = await _run(
+                context,
+                () => state.setTopicSummary(t, md.trim()),
+              );
+              if (ok && mounted) setState(() => _editing = false);
             },
           )
         else
@@ -1824,6 +1906,44 @@ class _ResultView extends StatelessWidget {
 }
 
 /// The round task checkbox: tapping toggles done.
+/// One quiet line under a task header while the daemon researches it:
+/// spinner + what it is doing now; the error in red when it failed.
+class _ResearchLine extends StatelessWidget {
+  const _ResearchLine({required this.progress});
+  final ResearchProgress progress;
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final failed = progress.step == 'error';
+    return Row(
+      key: const Key('research-line'),
+      children: [
+        if (failed)
+          Icon(Icons.error_outline_rounded, size: 14, color: scheme.error)
+        else
+          SizedBox(
+            width: 12,
+            height: 12,
+            child: CircularProgressIndicator(
+              strokeWidth: 1.5,
+              color: scheme.primary,
+            ),
+          ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            progress.line,
+            style: secondaryStyle(context)
+                .copyWith(color: failed ? scheme.error : null),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 class _TaskCheck extends StatelessWidget {
   const _TaskCheck({super.key, required this.task, this.size = 18});
   final Task task;

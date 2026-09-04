@@ -148,7 +148,7 @@ void main() {
         .widgetList<PopupMenuItem<String>>(find.byType(PopupMenuItem<String>))
         .map((i) => i.value)
         .toList();
-    expect(items, ['link_topic', 'copy_id', 'delete']);
+    expect(items, ['research', 'link_topic', 'copy_id', 'delete']);
     await tester.tap(find.text('Delete'));
     await tester.pumpAndSettle();
     expect(api.ops.last['op'], 'object.archive');

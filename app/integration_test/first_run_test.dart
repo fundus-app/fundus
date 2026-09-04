@@ -7,8 +7,8 @@
 // daemon's /v1/health and /v1/inbox, and a trimmed widget tree, and writes
 // the same (plus a screenshot when the platform supports it) to build/e2e/.
 //
-// The second test dictates through the real `record` plugin (Linux:
-// parecord → ffmpeg) against a daemon that has a dictation model. It skips
+// The second test dictates through the real microphone path (Linux: the
+// runner's PulseAudio channel) against a daemon that has a dictation model. It skips
 // itself unless FUNDUS_DICTATION_URL is set. Nobody has to talk: play a spoken
 // file into a null sink and record from its monitor.
 //   pactl load-module module-null-sink sink_name=fundus_dict
@@ -378,6 +378,8 @@ void main() {
           await tapVisible(tester, find.byIcon(Icons.settings_outlined));
           await pumpUntil(tester, find.text('Settings'));
           await settle(tester);
+          await tapVisible(tester, find.byKey(const Key('connection-change')));
+          await pumpUntil(tester, find.byKey(const Key('connection-url')));
           expect(
             find.byWidgetPredicate(
               (w) => w is TextField && w.controller?.text == _url,
@@ -419,7 +421,7 @@ void main() {
       );
 
       if (_dictationWav.isNotEmpty) {
-        // paplay honours PULSE_SINK; parecord in the app honours PULSE_SOURCE.
+        // paplay honours PULSE_SINK; libpulse in the app honours PULSE_SOURCE.
         final play = await Process.run('paplay', [_dictationWav]);
         expect(play.exitCode, 0, reason: 'paplay failed: ${play.stderr}');
       } else {

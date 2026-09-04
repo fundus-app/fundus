@@ -4,8 +4,10 @@ import 'package:provider/provider.dart';
 import '../../api/models.dart';
 import '../../state/app_state.dart';
 import '../blocks/block_renderer.dart';
+import '../settings_screen.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import '../widgets/toasts.dart';
 
 /// Title + hint for the current view.
 class ViewHeader extends StatelessWidget {
@@ -188,11 +190,87 @@ class _InboxRowState extends State<_InboxRow> {
       if (mounted && r != null) {
         showReceiptSnack(context, r, undo: true);
       }
+    } on ApiException catch (e) {
+      // A maintenance proposal whose objects changed meanwhile: the daemon
+      // says what happened.
+      if (mounted) {
+        showError(
+          context,
+          e.status == 409 && e.message.isNotEmpty ? e.message : e,
+        );
+      }
     } catch (e) {
       if (mounted) showError(context, e);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  /// A proposal from the nightly maintenance: the question as title, what
+  /// accepting does below, Accept / Dismiss only.
+  Widget _maintenanceCard(BuildContext context, Capture c, AppState state) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final r = c.result;
+    return _Row(
+      selected: widget.selected,
+      onTap: () => widget.onOpen(c.id),
+      child: Column(
+        key: Key('maintenance-${c.id}'),
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                margin: const EdgeInsets.only(top: 2, right: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                decoration: BoxDecoration(
+                  color: scheme.surfaceContainerHigh,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text('maintenance', style: theme.textTheme.labelSmall),
+              ),
+              Expanded(
+                child: Text(
+                  (r?.summary.isNotEmpty ?? false) ? r!.summary : c.text,
+                  style: theme.textTheme.titleSmall,
+                ),
+              ),
+            ],
+          ),
+          if (r != null && r.lines.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            for (final l in r.lines) Text(l, style: theme.textTheme.bodySmall),
+          ],
+          const SizedBox(height: 2),
+          Text(timeAgo(c.meta.createdAt), style: theme.textTheme.labelSmall),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              FilledButton(
+                key: Key('accept-${c.id}'),
+                style: FilledButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                ),
+                onPressed: _busy ? null : _accept,
+                child: const Text('Accept'),
+              ),
+              const SizedBox(width: 4),
+              TextButton(
+                key: Key('dismiss-${c.id}'),
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  foregroundColor: scheme.onSurfaceVariant,
+                ),
+                onPressed: _busy ? null : () => _dismiss(state, c),
+                child: const Text('Dismiss'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -201,6 +279,9 @@ class _InboxRowState extends State<_InboxRow> {
     final scheme = theme.colorScheme;
     final c = widget.capture;
     final state = context.read<AppState>();
+    if (c.isMaintenance && c.status == 'needs_review') {
+      return _maintenanceCard(context, c, state);
+    }
     return _Row(
       selected: widget.selected,
       onTap: () => widget.onOpen(c.id),
@@ -461,10 +542,13 @@ class TaskRow extends StatelessWidget {
       trailing: PopupMenuButton<String>(
         tooltip: 'Task actions',
         icon: const Icon(Icons.more_horiz_rounded, size: 18),
-        onSelected: (s) => s == 'delete'
-            ? deleteObject(context, task.id, task.meta.rev, task.text)
-            : _setState(context, s),
+        onSelected: (s) => switch (s) {
+          'delete' => deleteObject(context, task.id, task.meta.rev, task.text),
+          'research' => researchTask(context, task),
+          _ => _setState(context, s),
+        },
         itemBuilder: (_) => [
+          if (task.state != 'done') researchMenuItem(context),
           if (task.state != 'open')
             const PopupMenuItem(value: 'open', child: Text('Reopen')),
           if (task.state != 'done')
@@ -514,6 +598,19 @@ class TaskRow extends StatelessWidget {
                 _Meta(
                   icon: Icons.hourglass_empty_rounded,
                   text: task.waitingOn,
+                ),
+              if (task.isResearch)
+                Container(
+                  key: const Key('research-tag'),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 5,
+                    vertical: 1,
+                  ),
+                  decoration: BoxDecoration(
+                    color: scheme.surfaceContainerHigh,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text('research', style: theme.textTheme.labelSmall),
                 ),
               if (task.topicNames.isNotEmpty)
                 TopicChips(
@@ -1057,6 +1154,62 @@ Future<void> deleteObject(
       key: 'txn:${r.txnId}',
       onUndo: () => undoWithConfirm(context, state, r.txnId, quiet: true),
     );
+  } catch (e) {
+    if (context.mounted) showError(context, e);
+  }
+}
+
+/// "Research this" menu entry: disabled with a hint when the daemon has no
+/// search backend.
+PopupMenuItem<String> researchMenuItem(BuildContext context) {
+  final available = context.read<AppState>().researchAvailable;
+  return PopupMenuItem<String>(
+    value: 'research',
+    enabled: available,
+    child: available
+        ? const Text('Research this')
+        : const Tooltip(
+            message: 'Research needs a search backend — see Settings',
+            child: Text('Research this'),
+          ),
+  );
+}
+
+/// Asks the daemon to research a task; progress follows over SSE.
+Future<void> researchTask(BuildContext context, Task task) async {
+  final state = context.read<AppState>();
+  try {
+    await state.startResearch(task);
+    if (context.mounted) {
+      showToast(
+        context,
+        'Researching “${task.text}”…',
+        key: 'research:${task.id}',
+      );
+    }
+  } on ApiException catch (e) {
+    if (!context.mounted) return;
+    if (e.code == 'already_running') {
+      showToast(
+        context,
+        'Research is already running for this task.',
+        key: 'research:${task.id}',
+      );
+    } else if (e.code == 'research_unavailable') {
+      showToast(
+        context,
+        describeError(e),
+        key: 'research',
+        error: true,
+        actionLabel: 'Settings',
+        onAction: () async {
+          SettingsScreen.show(context, section: SettingsSection.research);
+          return false;
+        },
+      );
+    } else {
+      showError(context, e);
+    }
   } catch (e) {
     if (context.mounted) showError(context, e);
   }

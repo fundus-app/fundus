@@ -518,3 +518,22 @@ func TestUnrelatedExistingTopicIsDropped(t *testing.T) {
 		t.Fatal("unrelated link applied")
 	}
 }
+
+func TestResearchClassificationMakesResearchTask(t *testing.T) {
+	c := newCore(t)
+	capID := capture(t, c, "Finde heraus, welche E-Ink-Displays am Raspberry Pi Zero laufen.")
+	res := result(Result{Classification: "research", Confidence: 0.9, Summary: "Recherche angelegt.", Operations: []Operation{
+		{Op: "task.create", Text: "Welche E-Ink-Displays laufen am Raspberry Pi Zero?"},
+	}})
+	out, err := triager(c, scripted(res, res)).Process(context.Background(), capID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := c.Tasks([]model.TaskState{model.TaskOpen}, false)
+	if len(tasks) != 1 || tasks[0].Kind != model.TaskKindResearch || strings.HasPrefix(tasks[0].Text, "Research:") {
+		t.Fatalf("task %+v", tasks[0].Task)
+	}
+	if !strings.Contains(out.Summary, "Created research task “Welche E-Ink-Displays laufen am Raspberry Pi Zero?”") {
+		t.Fatalf("receipt: %s", out.Summary)
+	}
+}

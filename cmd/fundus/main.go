@@ -30,6 +30,8 @@ import (
 	"github.com/fundus-app/fundus/internal/config"
 	"github.com/fundus-app/fundus/internal/core"
 	"github.com/fundus-app/fundus/internal/llm"
+	"github.com/fundus-app/fundus/internal/maintenance"
+	"github.com/fundus-app/fundus/internal/research"
 	"github.com/fundus-app/fundus/internal/triage"
 )
 
@@ -97,6 +99,8 @@ Client (talks to the running daemon; FUNDUS_URL / FUNDUS_TOKEN override config):
   fundus retry CAPTURE_ID [--answer TEXT]
   fundus dismiss CAPTURE_ID
   fundus ask [--conversation ID] TEXT...
+  fundus research TASK_ID | QUESTION... research on the web and wait for the note
+  fundus maintain                       run maintenance now and print the report
   fundus probe [--role triage|chat]
   fundus export [--format json|markdown] [--out FILE]
   fundus backup [--out FILE]            consistent zip of the event log and snapshot
@@ -313,6 +317,10 @@ func serve(args []string) error {
 	tr := triage.New(c, pick(cfg.Triage), cfg.Triage, cfg.Autonomy, lg)
 	worker := triage.NewWorker(c, tr, lg)
 	ch := chat.New(c, pick(cfg.Chat), cfg.Chat, cfg.Autonomy, lg)
+	rw := research.New(c, lg, api.Version)
+	ch.SetResearcher(rw)
+	worker.AfterProcess = rw.AutoKick
+	mw := maintenance.New(c, cfg.DataDir, lg)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -328,6 +336,13 @@ func serve(args []string) error {
 	}()
 
 	srv := api.New(c, cfg, worker, tr, ch, reg, lg)
+	srv.SetResearch(rw)
+	srv.SetMaintenance(mw)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		mw.Run(workerCtx)
+	}()
 	srv.DevCORS = *devCORS
 	srv.Warnings = warnings
 	lg.Info("fundus listening", "addr", cfg.Listen, "data", cfg.DataDir, "triage", cfg.Triage.Provider+"/"+cfg.Triage.Model, "chat", cfg.Chat.Provider+"/"+cfg.Chat.Model, "timezone", loc.String(), "version", api.Version)
@@ -336,6 +351,9 @@ func serve(args []string) error {
 	// period to finish the capture in flight, then is cancelled; chat turns
 	// were cancelled by the server shutdown.
 	worker.Stop()
+	rw.Stop()
+	mw.Stop()
+	srv.Close()
 	select {
 	case <-waitGroupDone(&wg):
 	case <-time.After(20 * time.Second):

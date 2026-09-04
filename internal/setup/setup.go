@@ -46,8 +46,72 @@ type View struct {
 	Triage      RoleView                `json:"triage"`
 	Chat        RoleView                `json:"chat"`
 	Dictation   RoleView                `json:"dictation"`
+	Research    ResearchView            `json:"research"`
+	Embedding   EmbeddingView           `json:"embedding"`
+	Maintenance MaintenanceView         `json:"maintenance"`
 	Autonomy    config.Policy           `json:"autonomy"`
 	Providers   map[string]ProviderView `json:"providers"`
+}
+
+// ResearchView shows the research settings; the Brave key itself is never
+// returned.
+type ResearchView struct {
+	Provider       string `json:"provider"`
+	Model          string `json:"model"`
+	Backend        string `json:"backend"`
+	ActiveBackend  string `json:"active_backend"` // what "auto" resolved to, "" when nothing can search
+	SearchModel    string `json:"search_model"`
+	SearxngURL     string `json:"searxng_url"`
+	BraveKeyStatus string `json:"brave_key_status"` // set | env | unset
+	Auto           bool   `json:"auto"`
+	Available      bool   `json:"available"`
+}
+
+// ResearchPatch updates research settings; an empty brave_api_key clears
+// the stored key.
+type ResearchPatch struct {
+	Provider    *string `json:"provider,omitempty"`
+	Model       *string `json:"model,omitempty"`
+	Backend     *string `json:"backend,omitempty"`
+	SearchModel *string `json:"search_model,omitempty"`
+	SearxngURL  *string `json:"searxng_url,omitempty"`
+	BraveAPIKey *string `json:"brave_api_key,omitempty"`
+	Auto        *bool   `json:"auto,omitempty"`
+}
+
+// EmbeddingView shows the embedding role and whether it can run.
+type EmbeddingView struct {
+	Provider  string `json:"provider"`
+	Model     string `json:"model"`
+	Available bool   `json:"available"`
+}
+
+// MaintenancePatch updates maintenance settings.
+type MaintenancePatch struct {
+	Enabled           *bool   `json:"enabled,omitempty"`
+	At                *string `json:"at,omitempty"`
+	Every             *string `json:"every,omitempty"` // "6h", "" for daily
+	Integrity         *bool   `json:"integrity,omitempty"`
+	Untagged          *bool   `json:"untagged,omitempty"`
+	Duplicates        *bool   `json:"duplicates,omitempty"`
+	Summaries         *bool   `json:"summaries,omitempty"`
+	Assist            *string `json:"assist,omitempty"`
+	UntaggedAfterDays *int    `json:"untagged_after_days,omitempty"`
+	KeepRuns          *int    `json:"keep_runs,omitempty"`
+}
+
+// MaintenanceView mirrors the configuration for clients.
+type MaintenanceView struct {
+	Enabled           bool   `json:"enabled"`
+	At                string `json:"at"`
+	Every             string `json:"every"`
+	Integrity         bool   `json:"integrity"`
+	Untagged          bool   `json:"untagged"`
+	Duplicates        bool   `json:"duplicates"`
+	Summaries         bool   `json:"summaries"`
+	Assist            string `json:"assist"`
+	UntaggedAfterDays int    `json:"untagged_after_days"`
+	KeepRuns          int    `json:"keep_runs"`
 }
 
 // RoleView names provider and model of a role.
@@ -58,13 +122,16 @@ type RoleView struct {
 
 // Patch is a partial settings update.
 type Patch struct {
-	Triage    *RoleView                `json:"triage,omitempty"`
-	Chat      *RoleView                `json:"chat,omitempty"`
-	Dictation *RoleView                `json:"dictation,omitempty"`
-	Timezone  *string                  `json:"timezone,omitempty"`
-	Token     *string                  `json:"token,omitempty"`
-	Autonomy  *PolicyPatch             `json:"autonomy,omitempty"`
-	Providers map[string]ProviderPatch `json:"providers,omitempty"`
+	Triage      *RoleView                `json:"triage,omitempty"`
+	Chat        *RoleView                `json:"chat,omitempty"`
+	Dictation   *RoleView                `json:"dictation,omitempty"`
+	Research    *ResearchPatch           `json:"research,omitempty"`
+	Embedding   *RoleView                `json:"embedding,omitempty"`
+	Maintenance *MaintenancePatch        `json:"maintenance,omitempty"`
+	Timezone    *string                  `json:"timezone,omitempty"`
+	Token       *string                  `json:"token,omitempty"`
+	Autonomy    *PolicyPatch             `json:"autonomy,omitempty"`
+	Providers   map[string]ProviderPatch `json:"providers,omitempty"`
 }
 
 // PolicyPatch updates autonomy fields.
@@ -90,7 +157,12 @@ func BuildView(cfg *config.Config) View {
 	v := View{Path: cfg.Path, Listen: cfg.Listen, Timezone: cfg.Timezone, TokenSet: cfg.Token != "", SetupNeeded: cfg.SetupNeeded(),
 		Triage: RoleView{cfg.Triage.Provider, cfg.Triage.Model}, Chat: RoleView{cfg.Chat.Provider, cfg.Chat.Model},
 		Dictation: RoleView{cfg.Dictation.Provider, cfg.Dictation.Model},
-		Autonomy:  cfg.Autonomy, Providers: map[string]ProviderView{}}
+		Research:  researchView(cfg),
+		Embedding: EmbeddingView{Provider: cfg.Embedding.Provider, Model: cfg.Embedding.Model, Available: cfg.EmbeddingAvailable()},
+		Maintenance: MaintenanceView{Enabled: cfg.Maintenance.Enabled, At: cfg.Maintenance.At, Every: durationString(cfg.Maintenance.Every),
+			Integrity: cfg.Maintenance.Integrity, Untagged: cfg.Maintenance.Untagged, Duplicates: cfg.Maintenance.Duplicates, Summaries: cfg.Maintenance.Summaries,
+			Assist: orDefault(cfg.Maintenance.Assist, "off"), UntaggedAfterDays: cfg.Maintenance.UntaggedAfterDays, KeepRuns: cfg.Maintenance.KeepRuns},
+		Autonomy: cfg.Autonomy, Providers: map[string]ProviderView{}}
 	if v.Timezone == "" {
 		v.Timezone = time.Local.String()
 	}
@@ -108,6 +180,35 @@ func BuildView(cfg *config.Config) View {
 			pv.KeyStatus = "unset"
 		}
 		v.Providers[name] = pv
+	}
+	return v
+}
+
+func durationString(d config.Duration) string {
+	if d.Duration <= 0 {
+		return ""
+	}
+	return d.Duration.String()
+}
+
+func orDefault(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
+}
+
+func researchView(cfg *config.Config) ResearchView {
+	role := cfg.ResearchRole()
+	v := ResearchView{Provider: role.Provider, Model: role.Model, Backend: cfg.Research.Backend, ActiveBackend: cfg.ResearchBackend(),
+		SearchModel: cfg.Research.SearchModel, SearxngURL: cfg.Research.SearxngURL, Auto: cfg.Research.AutoStart(), Available: cfg.ResearchAvailable()}
+	switch {
+	case cfg.Research.BraveAPIKey != "":
+		v.BraveKeyStatus = "set"
+	case cfg.Research.BraveKey() != "":
+		v.BraveKeyStatus = "env"
+	default:
+		v.BraveKeyStatus = "unset"
 	}
 	return v
 }
@@ -205,6 +306,89 @@ func Apply(cfg *config.Config, p Patch) (*config.Config, error) {
 			next.Triage.Model = p.Triage.Model
 		}
 	}
+	if p.Research != nil {
+		rp := p.Research
+		if rp.Provider != nil {
+			prov := strings.ToLower(strings.TrimSpace(*rp.Provider))
+			if prov != next.Research.Provider {
+				next.Research.Model = ""
+			}
+			next.Research.Provider = prov
+		}
+		if rp.Model != nil {
+			next.Research.Model = strings.TrimSpace(*rp.Model)
+		}
+		if rp.Backend != nil {
+			next.Research.Backend = strings.ToLower(strings.TrimSpace(*rp.Backend))
+		}
+		if rp.SearchModel != nil {
+			next.Research.SearchModel = strings.TrimSpace(*rp.SearchModel)
+		}
+		if rp.SearxngURL != nil {
+			u := strings.TrimRight(strings.TrimSpace(*rp.SearxngURL), "/")
+			if u != "" {
+				parsed, err := url.Parse(u)
+				if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+					return nil, errors.New("research.searxng_url must be an http(s) URL")
+				}
+			}
+			next.Research.SearxngURL = u
+		}
+		if rp.BraveAPIKey != nil {
+			next.Research.BraveAPIKey = strings.TrimSpace(*rp.BraveAPIKey)
+		}
+		if rp.Auto != nil {
+			next.Research.Manual = !*rp.Auto
+		}
+	}
+	if p.Embedding != nil {
+		if p.Embedding.Provider != "" && p.Embedding.Provider != next.Embedding.Provider {
+			next.Embedding.Provider = strings.ToLower(strings.TrimSpace(p.Embedding.Provider))
+		}
+		next.Embedding.Model = strings.TrimSpace(p.Embedding.Model)
+	}
+	if p.Maintenance != nil {
+		mp := p.Maintenance
+		m := &next.Maintenance
+		if mp.Enabled != nil {
+			m.Enabled = *mp.Enabled
+		}
+		if mp.At != nil {
+			m.At = strings.TrimSpace(*mp.At)
+		}
+		if mp.Every != nil {
+			if v := strings.TrimSpace(*mp.Every); v == "" {
+				m.Every = config.Duration{}
+			} else {
+				d, err := time.ParseDuration(v)
+				if err != nil || d < 10*time.Minute {
+					return nil, errors.New("maintenance.every must be a duration of at least 10m, or empty for daily")
+				}
+				m.Every = config.Duration{Duration: d}
+			}
+		}
+		if mp.Integrity != nil {
+			m.Integrity = *mp.Integrity
+		}
+		if mp.Untagged != nil {
+			m.Untagged = *mp.Untagged
+		}
+		if mp.Duplicates != nil {
+			m.Duplicates = *mp.Duplicates
+		}
+		if mp.Summaries != nil {
+			m.Summaries = *mp.Summaries
+		}
+		if mp.Assist != nil {
+			m.Assist = strings.ToLower(strings.TrimSpace(*mp.Assist))
+		}
+		if mp.UntaggedAfterDays != nil {
+			m.UntaggedAfterDays = *mp.UntaggedAfterDays
+		}
+		if mp.KeepRuns != nil {
+			m.KeepRuns = *mp.KeepRuns
+		}
+	}
 	if p.Dictation != nil {
 		if p.Dictation.Provider != "" && p.Dictation.Provider != next.Dictation.Provider {
 			next.Dictation.Provider = strings.ToLower(strings.TrimSpace(p.Dictation.Provider))
@@ -243,6 +427,7 @@ type Suggestion struct {
 	Triage     string `json:"triage"`
 	Chat       string `json:"chat"`
 	Transcribe string `json:"transcribe"`
+	Embed      string `json:"embed"`
 }
 
 // ModelList is the result of listing a provider's models.
@@ -354,6 +539,7 @@ func Suggest(provider string, models []string) Suggestion {
 			s.Chat = newestGPT(models, "terra", "sol", "")
 		}
 		s.Transcribe = first("gpt-transcribe", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "whisper-1")
+		s.Embed = first("text-embedding-3-small", "text-embedding-3-large")
 	case "gemini":
 		s.Triage = first("gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-3.8-flash", "gemini-2.5-flash")
 		s.Chat = first("gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-2.5-pro", "gemini-2.5-flash")
@@ -364,6 +550,10 @@ func Suggest(provider string, models []string) Suggestion {
 			s.Chat = s.Triage
 		}
 		s.Transcribe = s.Chat
+		s.Embed = first("gemini-embedding-2-preview", "gemini-embedding-001")
+		if s.Embed == "" {
+			s.Embed = prefix("gemini-embedding")
+		}
 	case "anthropic":
 		s.Triage = first("claude-haiku-4-5", "claude-sonnet-5", "claude-sonnet-4-6")
 		s.Chat = first("claude-opus-5", "claude-sonnet-5", "claude-opus-4-8")
@@ -371,9 +561,11 @@ func Suggest(provider string, models []string) Suggestion {
 		s.Triage = first("openai/gpt-5.6-luna", "openai/gpt-5.4-mini", "openai/gpt-5-mini", "anthropic/claude-haiku-4.5", "google/gemini-2.5-flash")
 		s.Chat = first("openai/gpt-5.6-terra", "anthropic/claude-sonnet-5", "openai/gpt-5.5", "anthropic/claude-opus-5", "openai/gpt-5.1")
 		s.Transcribe = first("google/gemini-3.8-flash", "google/gemini-2.5-flash", "google/gemini-2.5-flash-lite")
+		s.Embed = first("openai/text-embedding-3-small", "openai/text-embedding-3-large")
 	case "ollama":
 		s.Triage = prefix("qwen3:", "llama3.3", "llama3.1", "mistral", "gemma3")
 		s.Chat = prefix("qwen3:", "llama3.3", "llama3.1", "gemma3", "mistral")
+		s.Embed = prefix("nomic-embed-text", "mxbai-embed-large", "bge-m3", "all-minilm", "snowflake-arctic-embed")
 	}
 	if s.Triage == "" && len(models) > 0 {
 		s.Triage = models[0]

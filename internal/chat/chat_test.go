@@ -143,3 +143,53 @@ func TestChatProposalsWhenAutoCreateOff(t *testing.T) {
 		t.Fatalf("expected a parked proposal and no note: %+v", st)
 	}
 }
+
+type fakeResearcher struct {
+	available bool
+	started   []string
+}
+
+func (f *fakeResearcher) Available() bool { return f.available }
+func (f *fakeResearcher) StartQuestion(ctx context.Context, q, actor string, topics []string) (string, error) {
+	f.started = append(f.started, q+"|"+actor)
+	return "task_01RESEARCH", nil
+}
+
+func TestChatResearchToolOnlyWhenAvailable(t *testing.T) {
+	c, _, convID := setup(t)
+	var toolNames []string
+	step := 0
+	p := &llm.Fake{Fn: func(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+		step++
+		toolNames = nil
+		for _, tl := range req.Tools {
+			toolNames = append(toolNames, tl.Name)
+		}
+		if step == 1 && contains(toolNames, "research") {
+			return &llm.Response{ToolCalls: []llm.ToolCall{call("research", map[string]any{"question": "Which e-ink displays work with a Pi Zero?"})}}, nil
+		}
+		return &llm.Response{Content: "Started."}, nil
+	}}
+	ch := New(c, p, config.Role{Model: "m"}, config.Default().Autonomy, nil)
+	r := &fakeResearcher{}
+	ch.SetResearcher(r)
+	// Unavailable: no tool offered, nothing started.
+	if _, err := ch.Send(context.Background(), convID, "research e-ink displays", "", "user:test", nil); err != nil {
+		t.Fatal(err)
+	}
+	if contains(toolNames, "research") || len(r.started) != 0 {
+		t.Fatalf("research offered while unavailable: %v %v", toolNames, r.started)
+	}
+	r.available = true
+	step = 0
+	reply, err := ch.Send(context.Background(), convID, "research e-ink displays", "", "user:test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.started) != 1 || !strings.HasPrefix(r.started[0], "Which e-ink displays") || !strings.Contains(r.started[0], "|llm:chat") {
+		t.Fatalf("started %v", r.started)
+	}
+	if len(reply.Steps) < 2 || reply.Steps[0].Tool != "research" {
+		t.Fatalf("steps %+v", reply.Steps)
+	}
+}

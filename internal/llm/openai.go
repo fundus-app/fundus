@@ -42,6 +42,10 @@ type OpenAI struct {
 	// legacyMaxTokens is set when the endpoint rejects max_completion_tokens.
 	legacyMaxTokens bool
 	transcription   string
+	webSearch       string
+	// noReasoningTools lists models that reject function tools unless
+	// reasoning_effort is "none" (gpt-5.6 on chat completions).
+	noReasoningTools map[string]bool
 }
 
 // OpenAIOptions configures NewOpenAI.
@@ -55,6 +59,9 @@ type OpenAIOptions struct {
 	// Transcription is "audio" (POST /audio/transcriptions), "chat" (the
 	// recording as an input_audio part) or "none".
 	Transcription string
+	// WebSearch is "chat_completions" (web_search_options on a search model),
+	// "openrouter" (the web plugin) or "none".
+	WebSearch string
 }
 
 // NewOpenAI builds a provider.
@@ -68,6 +75,7 @@ func NewOpenAI(o OpenAIOptions) *OpenAI {
 		mode:    o.Structured,
 
 		transcription: o.Transcription,
+		webSearch:     o.WebSearch,
 	}
 	if p.client == nil {
 		p.client = &http.Client{Timeout: 10 * time.Minute}
@@ -89,10 +97,22 @@ func (p *OpenAI) Mode() StructuredMode {
 }
 
 type oaMessage struct {
-	Role       string       `json:"role"`
-	Content    string       `json:"content"`
-	ToolCalls  []oaToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string       `json:"tool_call_id,omitempty"`
+	Role        string         `json:"role"`
+	Content     string         `json:"content"`
+	ToolCalls   []oaToolCall   `json:"tool_calls,omitempty"`
+	ToolCallID  string         `json:"tool_call_id,omitempty"`
+	Annotations []oaAnnotation `json:"annotations,omitempty"`
+}
+
+// oaAnnotation is a citation attached by web search models.
+type oaAnnotation struct {
+	Type        string `json:"type"`
+	URLCitation struct {
+		URL        string `json:"url"`
+		Title      string `json:"title"`
+		StartIndex int    `json:"start_index"`
+		EndIndex   int    `json:"end_index"`
+	} `json:"url_citation"`
 }
 
 type oaToolCall struct {
@@ -113,6 +133,10 @@ type oaRequest struct {
 	LegacyMaxTokens int             `json:"max_tokens,omitempty"`
 	Temperature     *float64        `json:"temperature,omitempty"`
 	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
+	// Web search: OpenAI search models take web_search_options, OpenRouter
+	// takes the "web" plugin.
+	WebSearchOptions json.RawMessage `json:"web_search_options,omitempty"`
+	Plugins          json.RawMessage `json:"plugins,omitempty"`
 }
 
 type oaTool struct {
@@ -160,6 +184,21 @@ func (p *OpenAI) Complete(ctx context.Context, req *Request) (*Response, error) 
 				continue
 			}
 		}
+		// Newer OpenAI models refuse function tools together with reasoning
+		// on chat completions unless reasoning_effort is "none": remember
+		// that per model and retry once.
+		if errors.As(err, &e) && e.Status == 400 && len(req.Tools) > 0 && strings.Contains(e.Message, "reasoning_effort") {
+			p.mu.Lock()
+			if p.noReasoningTools == nil {
+				p.noReasoningTools = map[string]bool{}
+			}
+			already := p.noReasoningTools[req.Model]
+			p.noReasoningTools[req.Model] = true
+			p.mu.Unlock()
+			if !already {
+				continue
+			}
+		}
 		// Downgrade the structured mode when the endpoint rejects it.
 		if p.auto && req.Schema != nil && errors.As(err, &e) && e.Status == 400 && mode != ModePrompt &&
 			(strings.Contains(strings.ToLower(e.Message), "response_format") || strings.Contains(strings.ToLower(e.Message), "json_schema") || strings.Contains(strings.ToLower(e.Message), "schema")) {
@@ -182,6 +221,9 @@ func (p *OpenAI) complete(ctx context.Context, req *Request, mode StructuredMode
 	p.mu.Lock()
 	if p.legacyMaxTokens {
 		body.LegacyMaxTokens, body.MaxTokens = req.MaxTokens, 0
+	}
+	if len(req.Tools) > 0 && p.noReasoningTools[req.Model] {
+		body.ReasoningEffort = "none"
 	}
 	p.mu.Unlock()
 	system := req.System
@@ -455,4 +497,85 @@ func audioFilename(mime string) string {
 		return "audio.m4a"
 	}
 	return "audio.wav"
+}
+
+// SearchWeb implements WebSearcher through the provider's own search: a chat
+// completion on a search-capable model whose answer carries url_citation
+// annotations. The model's prose is only used for snippets.
+func (p *OpenAI) SearchWeb(ctx context.Context, model, query string, n int) ([]SearchResult, error) {
+	if n <= 0 {
+		n = 8
+	}
+	body := oaRequest{Model: model, Messages: []oaMessage{
+		{Role: "system", Content: "You are a web search engine. For the query, find the most relevant current web pages and answer with a short list: for each page one line with its title, a one-sentence summary and the URL. Cite every page."},
+		{Role: "user", Content: query},
+	}}
+	switch p.webSearch {
+	case "chat_completions":
+		body.WebSearchOptions = json.RawMessage(`{"search_context_size":"low"}`)
+	case "openrouter":
+		body.Plugins = json.RawMessage(fmt.Sprintf(`[{"id":"web","max_results":%d}]`, n))
+	default:
+		return nil, &Error{Provider: p.name, Message: "this provider has no web search of its own"}
+	}
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := p.post(ctx, "/chat/completions", "application/json", buf)
+	if err != nil {
+		return nil, err
+	}
+	var or oaResponse
+	if err := json.Unmarshal(raw, &or); err != nil {
+		return nil, &Error{Provider: p.name, Message: "decode response: " + err.Error()}
+	}
+	if len(or.Choices) == 0 {
+		return nil, &Error{Provider: p.name, Message: "no choices in response"}
+	}
+	msg := or.Choices[0].Message
+	var out []SearchResult
+	seen := map[string]bool{}
+	for _, a := range msg.Annotations {
+		u := strings.TrimSpace(a.URLCitation.URL)
+		if a.Type != "url_citation" || u == "" || seen[u] {
+			continue
+		}
+		seen[u] = true
+		r := SearchResult{URL: u, Title: strings.TrimSpace(a.URLCitation.Title)}
+		if s, e := a.URLCitation.StartIndex, a.URLCitation.EndIndex; s >= 0 && e > s && e <= len(msg.Content) {
+			r.Snippet = strings.TrimSpace(msg.Content[s:e])
+		}
+		out = append(out, r)
+		if len(out) >= n {
+			break
+		}
+	}
+	if len(out) == 0 {
+		// No annotations: fall back to links written into the text.
+		for _, u := range markdownLinks(msg.Content) {
+			if seen[u] {
+				continue
+			}
+			seen[u] = true
+			out = append(out, SearchResult{URL: u})
+			if len(out) >= n {
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+// markdownLinks returns the http(s) URLs found in text, in order.
+func markdownLinks(text string) []string {
+	var out []string
+	for _, f := range strings.FieldsFunc(text, func(r rune) bool {
+		return r == ' ' || r == '\n' || r == '(' || r == ')' || r == '<' || r == '>' || r == '[' || r == ']'
+	}) {
+		if strings.HasPrefix(f, "http://") || strings.HasPrefix(f, "https://") {
+			out = append(out, strings.TrimRight(f, ".,;"))
+		}
+	}
+	return out
 }

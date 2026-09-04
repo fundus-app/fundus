@@ -121,4 +121,60 @@ void main() {
       state.dispose();
     },
   );
+
+  testWidgets(
+    'Linux recorder: start/stop on the channel, chunks and errors flow',
+    (tester) async {
+      const channel = MethodChannel(LinuxPulseRecorder.channelName);
+      final calls = <String>[];
+      var fail = false;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            calls.add(call.method);
+            if (call.method == 'start' && fail) {
+              throw PlatformException(
+                code: 'unavailable',
+                message: 'No such entity',
+              );
+            }
+            return null;
+          });
+      addTearDown(
+        () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, null),
+      );
+      Future<void> fromNative(String method, Object? args) async {
+        await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .handlePlatformMessage(
+              LinuxPulseRecorder.channelName,
+              const StandardMethodCodec().encodeMethodCall(
+                MethodCall(method, args),
+              ),
+              (_) {},
+            );
+      }
+
+      final rec = LinuxPulseRecorder();
+      final got = <int>[];
+      final stream = await rec.start();
+      final sub = stream.listen(got.addAll);
+      await fromNative('chunk', Uint8List(3200));
+      await fromNative('chunk', Uint8List(3200));
+      expect(got.length, 6400);
+      await rec.stop();
+      expect(calls, ['start', 'stop']);
+      // Not awaited: a cancel future completes in the root zone, which never
+      // turns under fake async (dart-lang/sdk#40131).
+      unawaited(sub.cancel());
+
+      // The controller turns a failed start into the one user-facing message.
+      fail = true;
+      final api = FakeApi();
+      final c = DictationController(api, recorder: rec);
+      expect(await c.start(), isFalse);
+      expect(c.lastError, 'Microphone not available.');
+      expect(c.status, DictationStatus.idle);
+      c.dispose();
+    },
+  );
 }

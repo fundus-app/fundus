@@ -4,6 +4,8 @@
 
 <p align="center">Runs on your own computer. Your data stays in files you own. Every change is explained and can be undone.</p>
 
+<p align="center"><a href="https://fundus-app.de">fundus-app.de</a> · <a href="../../releases">Downloads</a> · <a href="docs/concept.md">Concept</a></p>
+
 ---
 
 ## What it does
@@ -29,7 +31,7 @@ That is the whole idea. No folders to choose, no tags to maintain, no forms to f
 ## Start in one minute
 
 1. Download the app for your system from the [releases](../../releases) page (the [edge](../../releases/tag/edge) pre-release is the newest build of `main`):
-   **Linux** `Fundus-<version>-x86_64.AppImage` (make it executable and run it),
+   **Linux** `Fundus-<version>-x86_64.AppImage` (make it executable and run it), or the Flatpak bundle `Fundus-<version>-x86_64.flatpak` (`flatpak install --user Fundus-*.flatpak`; needs the [Flathub](https://flathub.org/setup) remote for the GNOME runtime), or the snap `fundus_<version>_amd64.snap` (`sudo snap install --dangerous fundus_*.snap` until it is in the Snap Store, then `sudo snap connect fundus:audio-record` for dictation),
    **macOS** `Fundus-<version>-macos.zip` (unzip, drag to Applications; the first start needs a right-click → Open because the app is not yet notarised),
    **Windows** `Fundus-<version>-windows.zip` (unzip anywhere and start `fundus_app.exe`; SmartScreen will ask once because the build is unsigned).
    The app carries its own background service; nothing else to install.
@@ -39,6 +41,10 @@ That is the whole idea. No folders to choose, no tags to maintain, no forms to f
 You can capture before a model is connected; those captures wait in the inbox and get filed as soon as one is.
 
 <p align="center"><img src="docs/screenshots/wizard.png" width="720" alt="Fundus: connecting a model on first start"></p>
+
+**Research.** Ask in your own words and language, "Find out which e-ink displays work with a Raspberry Pi Zero" or "Finde heraus, welche E-Ink-Displays am Pi Zero laufen", and the model files it as a research task and starts researching right away (a switch in Settings → Research makes it wait for "Research this" instead). Fundus searches the web, reads a few pages, and writes one note: the answer marked as external, the findings with numbered sources, retrieval dates and open questions; the task is completed with a link to it, and one undo removes all of it. Search runs through your OpenAI or OpenRouter account out of the box; a [Brave Search](https://brave.com/search/api/) key or your own [SearXNG](https://docs.searxng.org/) address in Settings → Research works with any provider. Web pages are treated as data, never as instructions, and the reader has no way to write into your notes.
+
+**Maintenance.** Once a day (03:30 by default, or `fundus maintain` whenever you like) Fundus tidies up: it files notes and tasks that have no topic, links likely duplicates and proposes merges in the inbox, keeps a short automatic summary on every topic, and removes links to topics you deleted. Nothing is merged or deleted without you: those land in the inbox as proposals with Accept and Dismiss, and every change it makes has a receipt and an undo. With an embedding model set (Settings → Maintenance) search becomes semantic and duplicates are found by meaning, not just by words. "Help with open tasks" is off by default; set it to *propose* and the model drafts checklists or outlines from your own notes into the inbox, or to *do it* and the drafts appear as notes linked to the task and research starts on its own.
 
 **Other ways to run it.** The single binary `fundus` (same releases page) runs the service and opens the same interface in your browser, for servers, headless machines or a quick look: `./fundus`. A Docker image with that interface is in `deploy/`. A tiny quick-capture window for a global shortcut is described in [app/README.md](app/README.md).
 
@@ -80,7 +86,7 @@ make appimage     # Linux desktop app + daemon as dist/Fundus-<version>-x86_64.A
 make test         # Go tests; make app-test runs flutter analyze and flutter test
 ```
 
-GitHub Actions builds all of it on every push (`.github/workflows/ci.yml`): tests, fuzzing, the web UI, the Go binaries for five platforms, the desktop end-to-end test and the Docker image. On `main` and on tags (`release.yml`) it also builds the desktop apps for Linux, macOS and Windows with the daemon bundled inside and pushes the image to GHCR: every push to `main` refreshes the rolling `edge` pre-release and the `:edge` image, a version tag (`v1.2.3` or `1.2.3`) publishes a GitHub release with every artifact and the `:latest` image. No secrets to configure: the automatic `GITHUB_TOKEN` is enough.
+GitHub Actions builds all of it on every push (`.github/workflows/ci.yml`): tests, fuzzing, the web UI, the Go binaries for five platforms, the desktop end-to-end test and the Docker image. On `main` and on tags (`release.yml`) it also builds the desktop apps for Linux (AppImage, Flatpak bundle, snap), macOS and Windows with the daemon bundled inside and pushes the image to GHCR: every push to `main` refreshes the rolling `edge` pre-release and the `:edge` image, a version tag (`v1.2.3` or `1.2.3`) publishes a GitHub release with every artifact and the `:latest` image. No secrets to configure: the automatic `GITHUB_TOKEN` is enough.
 
 Requirements: Go 1.27, Flutter stable (for the UI), ImageMagick for icons. Without Flutter you still get a working daemon and CLI; the binary serves a placeholder page.
 
@@ -125,8 +131,12 @@ fundus verify                   replay the whole log offline and compare with th
 
 **Security model in one paragraph**
 
-The daemon serves one user. On loopback it needs no token; on any other address it refuses to start without one. Every request must carry a loopback or configured Host, must not come from another web origin, and must send JSON, so a page open in your browser cannot read or write your notes. Keys are stored in a file only you can read and are never returned by the API; a stored key never follows a changed endpoint. Details in [docs/api.md](docs/api.md) and [ADR-0005](docs/decisions/ADR-0005-autonomy-policy.md).
+The daemon serves one user. On loopback it needs no token; on any other address it refuses to start without one. Every request must carry a loopback or configured Host, must not come from another web origin, and must send JSON (or, for dictation, the recording as a form upload), so a page open in your browser cannot read or write your notes. Keys are stored in a file only you can read and are never returned by the API; a stored key never follows a changed endpoint. Details in [docs/api.md](docs/api.md) and [ADR-0005](docs/decisions/ADR-0005-autonomy-policy.md).
 
 ## License
 
 Copyright © 2026 the Fundus authors. AGPL-3.0. Fundus is free software; if you run a modified version as a service, you must share your changes.
+
+---
+
+Website: [fundus-app.de](https://fundus-app.de) · Made with ♥ by [Yves Hoppe](https://www.yveshoppe.de) and [CMT](https://www.cmt.de).

@@ -26,6 +26,7 @@ func NewRegistry(cfg *config.Config, fakeFactory func(name string) Provider) (*R
 				Headers:       pc.Headers,
 				Structured:    StructuredMode(pc.Structured),
 				Transcription: pc.TranscriptionMode(),
+				WebSearch:     pc.WebSearchMode(),
 			})
 		case "fake":
 			if fakeFactory == nil {

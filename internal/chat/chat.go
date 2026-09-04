@@ -22,6 +22,12 @@ import (
 	"github.com/fundus-app/fundus/internal/triage"
 )
 
+// Researcher starts web research for a question (the research worker).
+type Researcher interface {
+	Available() bool
+	StartQuestion(ctx context.Context, question, actor string, topics []string) (string, error)
+}
+
 // Chat runs conversations.
 type Chat struct {
 	core     *core.Core
@@ -29,10 +35,31 @@ type Chat struct {
 	MaxSteps int
 	now      func() time.Time
 
+	researcher Researcher
+	search     SearchFunc
+
 	mu       sync.RWMutex
 	provider llm.Provider
 	role     config.Role
 	policy   config.Policy
+}
+
+// SearchFunc searches the store; the daemon plugs in hybrid search when
+// embeddings are configured.
+type SearchFunc func(ctx context.Context, q string, limit int, types []model.Type, includeAll bool) []core.Hit
+
+// SetSearch replaces the lexical search used by the search tool.
+func (c *Chat) SetSearch(fn SearchFunc) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.search = fn
+}
+
+// SetResearcher wires the research worker so the model can start research.
+func (c *Chat) SetResearcher(r Researcher) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.researcher = r
 }
 
 // New builds a Chat.
@@ -337,7 +364,15 @@ How to work:
 // Tools
 
 func (c *Chat) tools() []llm.Tool {
-	return []llm.Tool{
+	c.mu.RLock()
+	r := c.researcher
+	c.mu.RUnlock()
+	var extra []llm.Tool
+	if r != nil && r.Available() {
+		extra = append(extra, llm.Tool{Name: "research", Description: "Start web research on a question the notes cannot answer. Files a research task, searches and reads the web in the background and stores the findings as a note with sources; returns the task id right away. Use it only when the user asks to research, look up or find out something from the web.",
+			Parameters: json.RawMessage(`{"type":"object","properties":{"question":{"type":"string","description":"The concrete question to research, in the user's words."}},"required":["question"]}`)})
+	}
+	return append(extra, []llm.Tool{
 		{Name: "search", Description: "Full-text search over notes, ideas, tasks and topics. Returns ids, titles and previews.",
 			Parameters: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"types":{"type":"array","items":{"type":"string","enum":["note","task","topic","capture"]}},"limit":{"type":"integer"}},"required":["query"]}`)},
 		{Name: "get", Description: "Read one object in full by id (note body as Markdown, task fields, topic page with linked notes and tasks, capture text).",
@@ -348,7 +383,7 @@ func (c *Chat) tools() []llm.Tool {
 			Parameters: json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string","description":"One sentence in the user's language describing the change."},"operations":` + operationsSchema() + `},"required":["summary","operations"]}`)},
 		{Name: "undo", Description: "Revert a change you made earlier in this conversation, by the txn id from its receipt. Fails if the user changed the objects since.",
 			Parameters: json.RawMessage(`{"type":"object","properties":{"txn_id":{"type":"string"}},"required":["txn_id"]}`)},
-	}
+	}...)
 }
 
 func operationsSchema() string {
@@ -363,6 +398,8 @@ func describeCall(tc llm.ToolCall) string {
 	var a map[string]any
 	_ = json.Unmarshal(tc.Args, &a)
 	switch tc.Name {
+	case "research":
+		return fmt.Sprintf("Starting research on %q", a["question"])
 	case "search":
 		return fmt.Sprintf("Searching for %q", a["query"])
 	case "get":
@@ -401,6 +438,23 @@ func (t *turnState) remember(out string) {
 func (c *Chat) execute(ctx context.Context, tc llm.ToolCall, turn *turnState) (string, *model.Receipt, error) {
 	capID := turn.capID
 	switch tc.Name {
+	case "research":
+		var a struct {
+			Question string `json:"question"`
+		}
+		_ = json.Unmarshal(tc.Args, &a)
+		c.mu.RLock()
+		r := c.researcher
+		c.mu.RUnlock()
+		if r == nil || !r.Available() {
+			return "", nil, errors.New("research is not available")
+		}
+		taskID, err := r.StartQuestion(ctx, a.Question, c.actor(), nil)
+		if err != nil {
+			return "", nil, err
+		}
+		turn.seen[taskID] = true
+		return "Research started as task " + taskID + ". It runs in the background; the findings will appear as a note with sources linked to that task, and the task is completed when it is done. Tell the user this in one sentence and do not wait for it.", nil, nil
 	case "search":
 		var a struct {
 			Query string   `json:"query"`
@@ -418,7 +472,15 @@ func (c *Chat) execute(ctx context.Context, tc llm.ToolCall, turn *turnState) (s
 			types = append(types, model.Type(t))
 		}
 		includeCaptures := contains(a.Types, "capture")
-		hits := c.core.Search(a.Query, a.Limit, types, includeCaptures)
+		c.mu.RLock()
+		searchFn := c.search
+		c.mu.RUnlock()
+		var hits []core.Hit
+		if searchFn != nil {
+			hits = searchFn(ctx, a.Query, a.Limit, types, includeCaptures)
+		} else {
+			hits = c.core.Search(a.Query, a.Limit, types, includeCaptures)
+		}
 		if len(hits) == 0 {
 			return "No results.", nil, nil
 		}

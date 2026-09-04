@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/fundus-app/fundus/internal/model"
 	"io"
 	"log/slog"
 	"mime"
@@ -22,7 +23,10 @@ import (
 	"github.com/fundus-app/fundus/internal/chat"
 	"github.com/fundus-app/fundus/internal/config"
 	"github.com/fundus-app/fundus/internal/core"
+	"github.com/fundus-app/fundus/internal/embed"
 	"github.com/fundus-app/fundus/internal/llm"
+	"github.com/fundus-app/fundus/internal/maintenance"
+	"github.com/fundus-app/fundus/internal/research"
 	"github.com/fundus-app/fundus/internal/setup"
 	"github.com/fundus-app/fundus/internal/triage"
 	"github.com/fundus-app/fundus/internal/webui"
@@ -33,16 +37,24 @@ var Version = "dev"
 
 // Server wires handlers to the core.
 type Server struct {
-	core    *core.Core
-	cfg     *config.Config
-	worker  *triage.Worker
-	triager *triage.Triager
-	chat    *chat.Chat
-	reg     *llm.Registry
-	lg      *slog.Logger
-	mux     *http.ServeMux
-	started time.Time
-	DevCORS bool
+	core     *core.Core
+	cfg      *config.Config
+	worker   *triage.Worker
+	triager  *triage.Triager
+	chat     *chat.Chat
+	reg      *llm.Registry
+	research *research.Worker
+	maint    *maintenance.Worker
+	// Embeddings: index and syncer follow the configuration.
+	embedIndex  *embed.Index
+	embedder    embed.Embedder
+	embedModel  string
+	embedCancel context.CancelFunc
+	embedKey    string
+	lg          *slog.Logger
+	mux         *http.ServeMux
+	started     time.Time
+	DevCORS     bool
 	// Warnings are shown in /v1/health (missing API key, proxy hints, …).
 	Warnings []string
 
@@ -103,6 +115,27 @@ func (s *Server) applyConfig(next *config.Config) error {
 
 // configureRuntime pushes the current config into triage, chat and the core.
 // Roles whose provider is not usable get no provider (the worker waits).
+// SetMaintenance wires the maintenance worker.
+func (s *Server) SetMaintenance(w *maintenance.Worker) {
+	s.maint = w
+	s.configureRuntime()
+}
+
+// SearchHits runs the configured search: hybrid when embeddings exist.
+func (s *Server) SearchHits(ctx context.Context, q string, limit int, types []model.Type, includeAll bool) []core.Hit {
+	s.cfgMu.RLock()
+	ix, e, m := s.embedIndex, s.embedder, s.embedModel
+	s.cfgMu.RUnlock()
+	return embed.Search(ctx, s.core, ix, e, m, q, limit, types, includeAll)
+}
+
+// SetResearch wires the research worker; configureRuntime keeps it in step
+// with the configuration.
+func (s *Server) SetResearch(w *research.Worker) {
+	s.research = w
+	s.configureRuntime()
+}
+
 func (s *Server) configureRuntime() {
 	s.cfgMu.RLock()
 	cfg, reg := s.cfg, s.reg
@@ -126,6 +159,76 @@ func (s *Server) configureRuntime() {
 	}
 	if s.chat != nil {
 		s.chat.Configure(pick(cfg.Chat), cfg.Chat, cfg.Autonomy)
+	}
+	if s.research != nil {
+		role := cfg.ResearchRole()
+		p := pick(role)
+		var searcher research.Searcher
+		if p != nil {
+			searcher = research.NewSearcher(cfg, p, nil)
+		}
+		s.research.Configure(p, role, cfg.Research, searcher)
+	}
+	s.configureEmbeddings(cfg)
+	if s.triager != nil {
+		s.triager.SetSearch(s.SearchHits)
+	}
+	if s.chat != nil {
+		s.chat.SetSearch(s.SearchHits)
+	}
+	if s.maint != nil {
+		s.cfgMu.RLock()
+		ix, e, m := s.embedIndex, s.embedder, s.embedModel
+		s.cfgMu.RUnlock()
+		var r maintenance.Researcher
+		if s.research != nil {
+			r = s.research
+		}
+		s.maint.Configure(cfg.Maintenance, cfg.Autonomy, pick(cfg.Chat), cfg.Chat, ix, e, m, r)
+	}
+}
+
+// configureEmbeddings opens the vector index for the configured model and
+// (re)starts the syncer; a change of provider or model swaps both.
+func (s *Server) configureEmbeddings(cfg *config.Config) {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	if !cfg.EmbeddingAvailable() {
+		if s.embedCancel != nil {
+			s.embedCancel()
+			s.embedCancel = nil
+		}
+		s.embedIndex, s.embedder, s.embedModel = nil, nil, ""
+		return
+	}
+	pc := cfg.Providers[cfg.Embedding.Provider]
+	key := cfg.Embedding.Provider + "|" + cfg.Embedding.Model + "|" + pc.BaseURL
+	if s.embedIndex != nil && s.embedModel == cfg.Embedding.Model && s.embedKey == key {
+		return
+	}
+	if s.embedCancel != nil {
+		s.embedCancel()
+		s.embedCancel = nil
+	}
+	ix, err := embed.Open(cfg.DataDir, cfg.Embedding.Model)
+	if err != nil {
+		s.lg.Warn("embeddings index", "err", err)
+		return
+	}
+	client := &embed.Client{Name: cfg.Embedding.Provider, BaseURL: pc.BaseURL, APIKey: pc.ResolveAPIKey(), Headers: pc.Headers}
+	s.embedIndex, s.embedder, s.embedModel, s.embedKey = ix, client, cfg.Embedding.Model, key
+	ctx, cancel := context.WithCancel(context.Background())
+	s.embedCancel = cancel
+	go embed.NewSyncer(s.core, ix, client, cfg.Embedding.Model, s.lg).Run(ctx)
+}
+
+// Close stops background helpers the server started.
+func (s *Server) Close() {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	if s.embedCancel != nil {
+		s.embedCancel()
+		s.embedCancel = nil
 	}
 }
 
@@ -172,6 +275,10 @@ func (s *Server) routes() {
 	m.HandleFunc("PUT /v1/settings", s.handleSettingsPut)
 	m.HandleFunc("POST /v1/settings/test", s.handleSettingsTest)
 	m.HandleFunc("POST /v1/transcribe", s.handleTranscribe)
+	m.HandleFunc("GET /v1/maintenance", s.handleMaintenanceStatus)
+	m.HandleFunc("POST /v1/maintenance/run", s.handleMaintenanceRun)
+	m.HandleFunc("GET /v1/research", s.handleResearchList)
+	m.HandleFunc("POST /v1/research", s.handleResearchStart)
 	m.HandleFunc("GET /v1/setup/models", s.handleSetupModels)
 	m.HandleFunc("POST /v1/setup/models", s.handleSetupModels)
 	m.HandleFunc("POST /v1/setup/oauth/start", s.handleOAuthStart)

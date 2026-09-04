@@ -33,8 +33,16 @@ type Config struct {
 	Chat   Role `toml:"chat"`
 	// Dictation names the provider and model that turn recorded speech into
 	// capture text. An empty model switches dictation off.
-	Dictation Role   `toml:"dictation"`
-	Autonomy  Policy `toml:"autonomy"`
+	Dictation Role `toml:"dictation"`
+	// Research configures the reader that answers "Research:" tasks from
+	// the web (ADR-0010). Provider and model default to the chat role.
+	Research Research `toml:"research"`
+	// Embedding names the provider and model for semantic search. An empty
+	// model keeps search lexical.
+	Embedding Role `toml:"embedding"`
+	// Maintenance schedules the background curation runs.
+	Maintenance Maintenance `toml:"maintenance"`
+	Autonomy    Policy      `toml:"autonomy"`
 
 	Providers map[string]Provider `toml:"providers"`
 
@@ -58,6 +66,64 @@ type Role struct {
 	MaxTokens       int      `toml:"max_tokens"`
 	Temperature     *float64 `toml:"temperature"`
 	ReasoningEffort string   `toml:"reasoning_effort"`
+}
+
+// Research configures web research. Backend selects where searches go:
+// "auto" (Brave when a key is set, SearXNG when a URL is set, otherwise the
+// research provider's own web search), "brave", "searxng", "provider".
+type Research struct {
+	Provider       string   `toml:"provider"`
+	Model          string   `toml:"model"`
+	Backend        string   `toml:"backend"`
+	SearchModel    string   `toml:"search_model"` // the provider's search-capable model (OpenAI)
+	BraveAPIKeyEnv string   `toml:"brave_api_key_env"`
+	BraveAPIKey    string   `toml:"brave_api_key"`
+	SearxngURL     string   `toml:"searxng_url"`
+	MaxSearches    int      `toml:"max_searches"`
+	MaxPages       int      `toml:"max_pages"`
+	Timeout        Duration `toml:"timeout"`
+	// Manual stops research from starting by itself when triage files a
+	// research task; the user then presses "Research this". Off by default:
+	// asking for research is the request.
+	Manual bool `toml:"manual"`
+}
+
+// AutoStart reports whether research tasks start without a click.
+func (r Research) AutoStart() bool { return !r.Manual }
+
+// BraveKey resolves the Brave Search key from the file or the environment.
+func (r Research) BraveKey() string {
+	if r.BraveAPIKey != "" {
+		return r.BraveAPIKey
+	}
+	if r.BraveAPIKeyEnv != "" {
+		return os.Getenv(r.BraveAPIKeyEnv)
+	}
+	return ""
+}
+
+// Maintenance configures the scheduled curation runs (concept Phase 2):
+// integrity checks, topics for untagged notes and tasks, duplicate
+// detection, automatic topic summaries and, optionally, help with tasks.
+type Maintenance struct {
+	Enabled bool `toml:"enabled"`
+	// At is the local time of day for the daily run ("03:30"); Every runs
+	// on an interval instead when set ("6h"). A run also starts on demand.
+	At    string   `toml:"at"`
+	Every Duration `toml:"every"`
+	// Jobs.
+	Integrity  bool `toml:"integrity"`
+	Untagged   bool `toml:"untagged"`
+	Duplicates bool `toml:"duplicates"`
+	Summaries  bool `toml:"summaries"`
+	// Assist lets the model work on open tasks: "off", "propose" (drafts
+	// and research land in the inbox as proposals), "auto" (drafts are
+	// written as notes linked to the task, research starts by itself).
+	Assist string `toml:"assist"`
+	// UntaggedAfterDays leaves fresh objects alone.
+	UntaggedAfterDays int `toml:"untagged_after_days"`
+	// KeepRuns limits the run history kept in the data directory.
+	KeepRuns int `toml:"keep_runs"`
 }
 
 // Policy encodes the autonomy model: what the LLM may do without asking.
@@ -85,11 +151,25 @@ type Provider struct {
 	// Structured selects how JSON output is requested:
 	// auto | json_schema | json_object | prompt.
 	Structured string `toml:"structured"`
+	// WebSearch names the provider's own web search, used by research when
+	// no external backend is configured: "chat_completions" (OpenAI's
+	// web_search_options with a search model), "openrouter" (the web plugin)
+	// or "none". Empty means "none".
+	WebSearch string `toml:"web_search"`
 	// Transcription selects how speech is transcribed: "audio" uses the
 	// /audio/transcriptions endpoint (OpenAI), "chat" sends the recording as
 	// an input_audio part of a chat completion (Gemini, OpenRouter), "none"
 	// disables dictation for this provider. Empty means "audio".
 	Transcription string `toml:"transcription"`
+}
+
+// WebSearchMode returns the provider's web search capability.
+func (p Provider) WebSearchMode() string {
+	switch p.WebSearch {
+	case "chat_completions", "openrouter":
+		return p.WebSearch
+	}
+	return "none"
 }
 
 // TranscriptionMode returns the effective transcription strategy.
@@ -142,6 +222,23 @@ func Default() *Config {
 			Model:    "gpt-4o-mini-transcribe",
 			Timeout:  Duration{120 * time.Second},
 		},
+		Embedding: Role{
+			Provider: "openai",
+			Model:    "text-embedding-3-small",
+			Timeout:  Duration{2 * time.Minute},
+		},
+		Maintenance: Maintenance{
+			Enabled: true, At: "03:30", Integrity: true, Untagged: true, Duplicates: true, Summaries: true,
+			Assist: "off", UntaggedAfterDays: 1, KeepRuns: 30,
+		},
+		Research: Research{
+			Backend:        "auto",
+			SearchModel:    "gpt-5-search-api",
+			BraveAPIKeyEnv: "BRAVE_API_KEY",
+			MaxSearches:    3,
+			MaxPages:       4,
+			Timeout:        Duration{4 * time.Minute},
+		},
 		Autonomy: Policy{
 			MinConfidence:          0.6,
 			AutoCreate:             true,
@@ -154,6 +251,7 @@ func Default() *Config {
 				BaseURL:       "https://api.openai.com/v1",
 				APIKeyEnv:     "OPENAI_API_KEY",
 				Transcription: "audio",
+				WebSearch:     "chat_completions",
 			},
 			"gemini": {
 				Type:          "openai",
@@ -166,6 +264,7 @@ func Default() *Config {
 				BaseURL:       "https://openrouter.ai/api/v1",
 				APIKeyEnv:     "OPENROUTER_API_KEY",
 				Transcription: "chat",
+				WebSearch:     "openrouter",
 			},
 			"anthropic": {
 				Type:          "openai",
@@ -239,13 +338,92 @@ func Load(path string) (*Config, error) {
 	for name, p := range cfg.Providers {
 		if p.Transcription == "" {
 			p.Transcription = PresetTranscription(name)
-			cfg.Providers[name] = p
 		}
+		if p.WebSearch == "" {
+			p.WebSearch = PresetWebSearch(name)
+		}
+		cfg.Providers[name] = p
+	}
+	if cfg.Research.Backend == "" {
+		cfg.Research.Backend = "auto"
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+// PresetWebSearch returns the web search mode of a well-known provider name.
+func PresetWebSearch(name string) string {
+	if p, ok := Default().Providers[name]; ok {
+		return p.WebSearch
+	}
+	return ""
+}
+
+// ResearchRole returns the role research runs with: its own provider and
+// model, or the chat role when they are not set.
+func (c *Config) ResearchRole() Role {
+	r := c.Chat
+	if c.Research.Provider != "" {
+		r.Provider = c.Research.Provider
+		r.Model = c.Research.Model
+	} else if c.Research.Model != "" {
+		r.Model = c.Research.Model
+	}
+	if c.Research.Timeout.Duration > 0 {
+		r.Timeout = c.Research.Timeout
+	}
+	return r
+}
+
+// ResearchBackend resolves "auto" to the backend that can actually run:
+// brave with a key, searxng with a URL, provider when the research provider
+// has a web search of its own; "" when nothing can search.
+func (c *Config) ResearchBackend() string {
+	b := c.Research.Backend
+	prov, ok := c.Providers[c.ResearchRole().Provider]
+	providerOK := ok && prov.Usable() && prov.WebSearchMode() != "none"
+	switch b {
+	case "brave":
+		if c.Research.BraveKey() != "" {
+			return b
+		}
+		return ""
+	case "searxng":
+		if c.Research.SearxngURL != "" {
+			return b
+		}
+		return ""
+	case "provider":
+		if providerOK {
+			return b
+		}
+		return ""
+	}
+	switch {
+	case c.Research.BraveKey() != "":
+		return "brave"
+	case c.Research.SearxngURL != "":
+		return "searxng"
+	case providerOK:
+		return "provider"
+	}
+	return ""
+}
+
+// EmbeddingAvailable reports whether semantic search can run.
+func (c *Config) EmbeddingAvailable() bool {
+	p, ok := c.Providers[c.Embedding.Provider]
+	return ok && p.Usable() && p.Type == "openai" && c.Embedding.Model != ""
+}
+
+// ResearchAvailable reports whether research can run: a usable model and a
+// search backend.
+func (c *Config) ResearchAvailable() bool {
+	role := c.ResearchRole()
+	p, ok := c.Providers[role.Provider]
+	return ok && p.Usable() && p.Type != "fake" && role.Model != "" && c.ResearchBackend() != ""
 }
 
 // PresetTranscription returns the transcription mode of a well-known provider
@@ -306,6 +484,31 @@ func (c *Config) Validate() error {
 	if c.Dictation.Provider != "" {
 		if _, ok := c.Providers[c.Dictation.Provider]; !ok {
 			return fmt.Errorf("config: dictation.provider %q is not defined under [providers]", c.Dictation.Provider)
+		}
+	}
+	if c.Research.Provider != "" {
+		if _, ok := c.Providers[c.Research.Provider]; !ok {
+			return fmt.Errorf("config: research.provider %q is not defined under [providers]", c.Research.Provider)
+		}
+	}
+	switch c.Research.Backend {
+	case "", "auto", "brave", "searxng", "provider":
+	default:
+		return fmt.Errorf("config: research.backend %q (auto|brave|searxng|provider)", c.Research.Backend)
+	}
+	if c.Embedding.Provider != "" {
+		if _, ok := c.Providers[c.Embedding.Provider]; !ok {
+			return fmt.Errorf("config: embedding.provider %q is not defined under [providers]", c.Embedding.Provider)
+		}
+	}
+	switch c.Maintenance.Assist {
+	case "", "off", "propose", "auto":
+	default:
+		return fmt.Errorf("config: maintenance.assist %q (off|propose|auto)", c.Maintenance.Assist)
+	}
+	if c.Maintenance.At != "" {
+		if _, err := time.Parse("15:04", c.Maintenance.At); err != nil {
+			return fmt.Errorf("config: maintenance.at %q is not HH:MM", c.Maintenance.At)
 		}
 	}
 	for name, r := range map[string]Role{"triage": c.Triage, "chat": c.Chat} {
@@ -404,6 +607,46 @@ timeout = "180s"
 provider = "openai"
 model = "gpt-4o-mini-transcribe"
 
+# Semantic search: vectors from an OpenAI-compatible /embeddings endpoint,
+# cached under <data_dir>/embeddings, never in the event log. An empty model
+# keeps search lexical. Ollama: "nomic-embed-text"; Gemini: "gemini-embedding-001".
+[embedding]
+provider = "openai"
+model = "text-embedding-3-small"
+
+# Background curation (concept Phase 2). Runs daily at "at" (local time) or
+# every "every"; "fundus maintain" and POST /v1/maintenance/run start one now.
+# assist: off | propose | auto — let the model help with open tasks (drafts
+# from your own notes, research). "propose" puts its work in the inbox for
+# you to accept; "auto" writes notes linked to the task and starts research.
+[maintenance]
+enabled = true
+at = "03:30"
+integrity = true
+untagged = true
+duplicates = true
+summaries = true
+assist = "off"
+untagged_after_days = 1
+keep_runs = 30
+
+# Web research for "Research:" tasks (ADR-0010: the reader has no write
+# tools; findings are stored marked as external, with sources). provider and
+# model default to [chat]. backend: auto | brave | searxng | provider.
+# "auto" takes Brave when a key is set, SearXNG when a URL is set, otherwise
+# the provider's own search (OpenAI: search_model; OpenRouter: web plugin).
+[research]
+backend = "auto"
+search_model = "gpt-5-search-api"
+brave_api_key_env = "BRAVE_API_KEY"
+# searxng_url = "http://127.0.0.1:8080"
+max_searches = 3
+max_pages = 4
+timeout = "4m"
+# Research starts by itself when a capture asks for it. Set manual = true to
+# start it with "Research this" instead.
+manual = false
+
 [autonomy]
 # Below this confidence a capture is parked in the inbox instead of written.
 min_confidence = 0.6
@@ -421,6 +664,7 @@ type = "openai"
 base_url = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
 transcription = "audio"
+web_search = "chat_completions"
 
 [providers.gemini]
 type = "openai"
@@ -433,6 +677,7 @@ type = "openai"
 base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
 transcription = "chat"
+web_search = "openrouter"
 
 [providers.anthropic]
 type = "openai"

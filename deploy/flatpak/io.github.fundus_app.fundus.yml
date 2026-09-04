@@ -1,0 +1,39 @@
+# Flatpak bundle of the Linux desktop app plus the daemon. The release
+# workflow fills build-input/ with the Flutter bundle (build-input/bundle) and
+# the static daemon (build-input/daemon/fundus) before running
+# flatpak-builder; a Flathub submission would build both from source instead.
+app-id: io.github.fundus_app.fundus
+runtime: org.gnome.Platform
+runtime-version: '49'
+sdk: org.gnome.Sdk
+command: fundus_app
+finish-args:
+  - --share=ipc
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --device=dri
+  # Model providers live on the network; the daemon itself stays on loopback.
+  - --share=network
+  # Dictation.
+  - --socket=pulseaudio
+modules:
+  - name: fundus
+    buildsystem: simple
+    build-commands:
+      - mkdir -p /app/bin
+      - cp -r build-input/bundle/. /app/bin/
+      - install -Dm755 build-input/daemon/fundus /app/bin/fundus
+      - install -Dm644 io.github.fundus_app.fundus.desktop /app/share/applications/io.github.fundus_app.fundus.desktop
+      - install -Dm644 icon.png /app/share/icons/hicolor/512x512/apps/io.github.fundus_app.fundus.png
+      - install -Dm644 io.github.fundus_app.fundus.metainfo.xml /app/share/metainfo/io.github.fundus_app.fundus.metainfo.xml
+    sources:
+      - type: dir
+        path: build-input
+        dest: build-input
+      - type: file
+        path: io.github.fundus_app.fundus.desktop
+      - type: file
+        path: io.github.fundus_app.fundus.metainfo.xml
+      - type: file
+        path: ../icons/fundus-512.png
+        dest-filename: icon.png

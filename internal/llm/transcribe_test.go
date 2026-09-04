@@ -96,3 +96,31 @@ func TestTranscribeNone(t *testing.T) {
 		t.Fatal("expected an error")
 	}
 }
+
+func TestToolsRetryWithoutReasoning(t *testing.T) {
+	var efforts []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		eff, _ := body["reasoning_effort"].(string)
+		efforts = append(efforts, eff)
+		if _, hasTools := body["tools"]; hasTools && eff != "none" {
+			w.WriteHeader(400)
+			_, _ = io.WriteString(w, `{"error":{"message":"Function tools with reasoning_effort are not supported for gpt-5.6-luna in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to none."}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`)
+	}))
+	defer srv.Close()
+	p := NewOpenAI(OpenAIOptions{Name: "t", BaseURL: srv.URL})
+	tools := []Tool{{Name: "x", Parameters: json.RawMessage(`{"type":"object"}`)}}
+	if _, err := p.Complete(context.Background(), &Request{Model: "gpt-5.6-luna", Messages: []Message{{Role: "user", Content: "hi"}}, Tools: tools}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Complete(context.Background(), &Request{Model: "gpt-5.6-luna", Messages: []Message{{Role: "user", Content: "hi"}}, Tools: tools}); err != nil {
+		t.Fatal(err)
+	}
+	if len(efforts) != 3 || efforts[0] != "" || efforts[1] != "none" || efforts[2] != "none" {
+		t.Fatalf("efforts %v (expected one retry, then none from the start)", efforts)
+	}
+}

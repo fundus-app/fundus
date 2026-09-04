@@ -10,3 +10,9 @@
 /fundus
 /AppDir/
 *.log
+
+# packaging inputs staged by the release workflow
+deploy/flatpak/build-input/*
+!deploy/flatpak/build-input/README
+snap/build-input/*
+!snap/build-input/README

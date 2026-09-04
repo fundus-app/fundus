@@ -49,8 +49,14 @@ class FakeApi implements FundusApi {
     ],
   );
 
+  /// Inbox contents, accepted/dismissed ids; [acceptError] fails the next
+  /// accept.
+  final inboxItems = <Capture>[];
+  final accepted = <String>[];
+  final dismissed = <String>[];
+  ApiException? acceptError;
   @override
-  Future<List<Capture>> inbox() async => [];
+  Future<List<Capture>> inbox() async => inboxItems;
   @override
   Future<List<Capture>> captures({String status = '', int limit = 50}) async =>
       [];
@@ -58,16 +64,39 @@ class FakeApi implements FundusApi {
   Future<Capture> retryCapture(String id, {String answer = ''}) async =>
       _cap('', 'pending');
   @override
-  Future<Capture> dismissCapture(String id) async => _cap('', 'dismissed');
+  Future<Capture> dismissCapture(String id) async {
+    dismissed.add(id);
+    inboxItems.removeWhere((c) => c.id == id);
+    return _cap('', 'dismissed');
+  }
+
   @override
   Future<Capture> acceptCapture(
     String id, {
     List<Map<String, dynamic>>? operations,
-  }) async => _cap('', 'processed');
+  }) async {
+    final e = acceptError;
+    if (e != null) {
+      acceptError = null;
+      throw e;
+    }
+    accepted.add(id);
+    inboxItems.removeWhere((c) => c.id == id);
+    return _cap('', 'processed');
+  }
+
   @override
   Future<List<LinkRef>> resolve(List<String> ids) async => [
     for (final id in ids)
-      LinkRef(id: id, type: id.split('_').first, title: 'Title of $id'),
+      LinkRef(
+        id: id,
+        type: id.split('_').first,
+        title:
+            objectDetails[id]?.note?.title ??
+            objectDetails[id]?.task?.text ??
+            objectDetails[id]?.topic?.name ??
+            'Title of $id',
+      ),
   ];
   @override
   Future<List<Receipt>> changesAfter(int after) async => [];
@@ -91,6 +120,33 @@ class FakeApi implements FundusApi {
     'triage': <String, dynamic>{'provider': '', 'model': ''},
     'chat': <String, dynamic>{'provider': '', 'model': ''},
     'dictation': <String, dynamic>{'provider': '', 'model': ''},
+    'research': <String, dynamic>{
+      'provider': '',
+      'model': '',
+      'backend': 'auto',
+      'search_model': '',
+      'searxng_url': '',
+      'brave_key_status': 'none',
+      'available': false,
+      'auto': true,
+    },
+    'maintenance': <String, dynamic>{
+      'enabled': false,
+      'at': '03:30',
+      'every': 0,
+      'integrity': true,
+      'untagged': true,
+      'duplicates': true,
+      'summaries': true,
+      'assist': 'off',
+      'untagged_after_days': 3,
+      'keep_runs': 30,
+    },
+    'embedding': <String, dynamic>{
+      'provider': '',
+      'model': '',
+      'available': false,
+    },
     'autonomy': <String, dynamic>{
       'min_confidence': 0.6,
       'auto_create': true,
@@ -163,6 +219,13 @@ class FakeApi implements FundusApi {
       setupNeeded: setupNeeded,
       configuredTriage: setupNeeded ? '' : 'openai/gpt-5.6-luna',
       dictation: dictationOn,
+      research: researchOn,
+      maintenance: HealthMaintenance(
+        enabled: (serverSettings['maintenance'] as Map)['enabled'] == true,
+        running: maintenanceRunning,
+        next: maintenanceNext,
+      ),
+      embedding: '${(serverSettings['embedding'] as Map)['model']}'.isNotEmpty,
     );
   }
 
@@ -189,6 +252,30 @@ class FakeApi implements FundusApi {
         if (v is Map && v['base_url'] is String) p['base_url'] = v['base_url'];
         provs['$name'] = p;
       });
+    }
+    for (final k in ['maintenance', 'embedding']) {
+      if (patch[k] is Map) {
+        final m = Map<String, dynamic>.from(
+          serverSettings[k] as Map? ?? const {},
+        );
+        (patch[k] as Map).forEach((kk, v) => m['$kk'] = v);
+        if (k == 'embedding') m['available'] = '${m['model'] ?? ''}'.isNotEmpty;
+        serverSettings[k] = m;
+      }
+    }
+    if (patch['research'] is Map) {
+      final r = Map<String, dynamic>.from(
+        serverSettings['research'] as Map? ?? const {},
+      );
+      (patch['research'] as Map).forEach((k, v) {
+        if (k == 'brave_api_key') {
+          r['brave_key_status'] = '$v'.isEmpty ? 'none' : 'set';
+        } else {
+          r['$k'] = v;
+        }
+      });
+      r['available'] = r['backend'] != 'auto' || r['brave_key_status'] == 'set';
+      serverSettings['research'] = r;
     }
     for (final role in ['triage', 'chat', 'dictation']) {
       if (patch[role] is Map) {
@@ -269,8 +356,47 @@ class FakeApi implements FundusApi {
       suggestedTriage: 'gpt-5.6-luna',
       suggestedChat: 'gpt-5.6-terra',
       suggestedTranscribe: 'gpt-transcribe',
+      suggestedEmbed: 'text-embedding-4',
     );
   }
+
+  /// Research: started task ids; set [researchError] to make the next start
+  /// fail; [researchRunningIds] answers GET /v1/research.
+  final researchStarted = <String>[];
+  ApiException? researchError;
+  final researchRunningIds = <String>[];
+  bool researchOn = true;
+  @override
+  Future<ResearchStatus> startResearch(String taskId) async {
+    final e = researchError;
+    if (e != null) throw e;
+    researchStarted.add(taskId);
+    return ResearchStatus(taskId: taskId, status: 'running');
+  }
+
+  @override
+  Future<List<String>> researchRunning() async => researchRunningIds;
+
+  /// Maintenance: run requests; [maintenanceRunError] fails the next one;
+  /// [maintenance] answers GET /v1/maintenance.
+  final maintenanceRunsRequested = <int>[];
+  ApiException? maintenanceRunError;
+  bool maintenanceRunning = false;
+  DateTime? maintenanceNext;
+  MaintenanceStatus maintenance = const MaintenanceStatus();
+  @override
+  Future<String> runMaintenance() async {
+    final e = maintenanceRunError;
+    if (e != null) {
+      maintenanceRunError = null;
+      throw e;
+    }
+    maintenanceRunsRequested.add(maintenanceRunsRequested.length + 1);
+    return 'run_${maintenanceRunsRequested.length}';
+  }
+
+  @override
+  Future<MaintenanceStatus> maintenanceStatus() async => maintenance;
 
   @override
   Future<String> transcribe(Uint8List wav, {String? language}) async {
@@ -352,9 +478,11 @@ class FakeApi implements FundusApi {
   @override
   Future<List<Receipt>> changes({int limit = 50, bool all = false}) async => [];
 
-  /// Every op sent through commands(), and every undone txn.
+  /// Every op sent through commands(), and every undone txn. Set
+  /// [commandsError] to make the next commands() call fail with it.
   final ops = <Map<String, dynamic>>[];
   final undone = <String>[];
+  ApiException? commandsError;
   @override
   Future<Receipt> undo(String txnId, {bool force = false}) async {
     undone.add(txnId);
@@ -363,6 +491,11 @@ class FakeApi implements FundusApi {
 
   @override
   Future<Receipt> commands(List<Map<String, dynamic>> ops) async {
+    final e = commandsError;
+    if (e != null) {
+      commandsError = null;
+      throw e;
+    }
     this.ops.addAll(ops);
     return Receipt(txnId: 'txn_c${this.ops.length}', summary: 'ok');
   }

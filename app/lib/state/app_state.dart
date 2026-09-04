@@ -62,6 +62,15 @@ class PendingCapture {
   DateTime shownAt = DateTime.now();
 }
 
+/// Something the shell should tell the user about (as a toast): research
+/// finished or failed. Carries the note to open when there is one.
+class AppNotice {
+  const AppNotice(this.text, {this.noteId = '', this.error = false});
+  final String text;
+  final String noteId;
+  final bool error;
+}
+
 /// The selected object was removed by an undo.
 class RemovedNotice {
   const RemovedNotice(this.id, this.receipt);
@@ -111,6 +120,53 @@ class AppState extends ChangeNotifier {
 
   /// The daemon has a dictation model configured.
   bool get dictationAvailable => health?.dictation ?? false;
+
+  /// The daemon has a search backend: research can run.
+  bool get researchAvailable => health?.research ?? false;
+
+  /// Latest research progress per task id (running, or the last error).
+  final researchProgress = <String, ResearchProgress>{};
+
+  /// The maintenance run in progress (null when none), and a counter that
+  /// bumps when a run finishes so Settings can reload the last run.
+  MaintenanceProgress? maintenanceProgress;
+  int maintenanceRuns = 0;
+
+  /// Research done/failed notices for the shell to toast.
+  final _notices = StreamController<AppNotice>.broadcast();
+  Stream<AppNotice> get notices => _notices.stream;
+
+  /// Sources cited by research notes, by id.
+  final _sources = <String, Future<Source?>>{};
+  Future<Source?> sourceFor(String id) => _sources.putIfAbsent(
+    id,
+    () => api.object(id).then((d) => d.source).catchError((Object _) {
+      _sources.remove(id);
+      return null;
+    }),
+  );
+
+  /// Starts research for a task; the progress line follows over SSE.
+  Future<ResearchStatus> startResearch(Task t) async {
+    final r = await api.startResearch(t.id);
+    researchProgress[t.id] = ResearchProgress(taskId: t.id, step: 'search');
+    notifyListeners();
+    return r;
+  }
+
+  /// Marks tasks the daemon is still researching (after a restart).
+  Future<void> refreshResearch() async {
+    if (!researchAvailable) return;
+    try {
+      for (final id in await api.researchRunning()) {
+        researchProgress.putIfAbsent(
+          id,
+          () => ResearchProgress(taskId: id, step: 'search'),
+        );
+      }
+      notifyListeners();
+    } catch (_) {}
+  }
 
   /// Remembers the instance id per server (shared preferences); null in tests.
   final InstanceStore? instanceStore;
@@ -196,6 +252,7 @@ class AppState extends ChangeNotifier {
     _detailDebounce?.cancel();
     refs.dispose();
     dictation.dispose();
+    _notices.close();
     if (api is HttpFundusApi) (api as HttpFundusApi).close();
     super.dispose();
   }
@@ -227,6 +284,10 @@ class AppState extends ChangeNotifier {
   Future<void> checkHealth() async {
     try {
       health = await api.health();
+      if (health!.research && researchProgress.isEmpty) {
+        unawaited(refreshResearch());
+      }
+
       _checkInstance();
       reachable = true;
       lastError = null;
@@ -400,6 +461,44 @@ class AppState extends ChangeNotifier {
             _scheduleDetailRefresh();
           }
         }
+      case 'maintenance.progress':
+        final p = MaintenanceProgress.fromJson(ev.payload);
+        if (p.done) {
+          maintenanceProgress = null;
+          maintenanceRuns++;
+          _scheduleRefresh();
+          _countAttention();
+        } else {
+          maintenanceProgress = p;
+        }
+        notifyListeners();
+      case 'research.progress':
+        final p = ResearchProgress.fromJson(ev.payload);
+        if (p.taskId.isEmpty) break;
+        if (p.step == 'done') {
+          researchProgress.remove(p.taskId);
+          _notices.add(
+            AppNotice(
+              p.sources > 0
+                  ? 'Research done: ${p.sources} source${p.sources == 1 ? '' : 's'} read.'
+                  : 'Research done.',
+              noteId: p.noteId,
+            ),
+          );
+          if (selectedId == p.taskId) _scheduleDetailRefresh();
+          _scheduleRefresh();
+        } else {
+          researchProgress[p.taskId] = p;
+          if (p.step == 'error') {
+            _notices.add(
+              AppNotice(
+                p.summary.isEmpty ? 'Research failed.' : p.summary,
+                error: true,
+              ),
+            );
+          }
+        }
+        notifyListeners();
       case 'hello':
         _sseConnected = true;
         final seq = ev.payload['seq'];

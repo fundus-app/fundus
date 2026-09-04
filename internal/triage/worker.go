@@ -19,6 +19,8 @@ type Worker struct {
 	wake    chan struct{}
 	stop    chan struct{}
 	Poll    time.Duration
+	// AfterProcess runs after a capture was processed (research auto-start).
+	AfterProcess func()
 }
 
 // NewWorker builds a worker.
@@ -114,6 +116,9 @@ func (w *Worker) drain(ctx context.Context) {
 }
 
 func (w *Worker) process(ctx context.Context, cap *model.Capture) {
+	if w.AfterProcess != nil {
+		defer w.AfterProcess()
+	}
 	if cap.Status == model.CaptureFailed {
 		if _, err := w.core.Commit(ctx, "system", &model.Cause{Kind: "capture", ID: cap.ID},
 			[]model.Op{{Op: "capture.set_status", ID: cap.ID, ExpectedRev: cap.Rev, Status: string(model.CapturePending)}}); err != nil {

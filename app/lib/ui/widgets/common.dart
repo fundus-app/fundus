@@ -86,7 +86,10 @@ String describeError(Object e, {String? serverUrl}) {
       case 401:
         return 'The token was rejected.';
       case 403:
-        return 'You are not allowed to do that.';
+        // e.g. a pinned block that a whole-body edit would rewrite.
+        return e.message.isEmpty
+            ? 'You are not allowed to do that.'
+            : _sentence(e.message);
       case 404:
         return 'That item no longer exists.';
       case 409:
@@ -102,6 +105,11 @@ String describeError(Object e, {String? serverUrl}) {
             : _sentence(e.message);
       case 502:
       case 503:
+        if (e.code == 'research_unavailable') {
+          return e.message.isEmpty
+              ? 'Research needs a search backend — see Settings.'
+              : _sentence(e.message);
+        }
         return e.message.isEmpty
             ? 'The model provider did not answer.'
             : 'The model provider did not answer: ${_sentence(e.message)}';
@@ -135,7 +143,7 @@ void showError(BuildContext context, Object e) {
     actionLabel: connection ? 'Settings' : null,
     onAction: connection
         ? () async {
-            SettingsScreen.show(context);
+            SettingsScreen.show(context, section: SettingsSection.connection);
             return false;
           }
         : null,
@@ -353,7 +361,10 @@ class ErrorState extends StatelessWidget {
                 ),
                 const SizedBox(width: 8),
                 TextButton(
-                  onPressed: () => SettingsScreen.show(context),
+                  onPressed: () => SettingsScreen.show(
+                    context,
+                    section: SettingsSection.connection,
+                  ),
                   child: const Text('Settings'),
                 ),
               ],

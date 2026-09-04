@@ -86,6 +86,11 @@ type CaptureResult struct {
 	Retryable bool   `json:"retryable,omitempty"`
 	Provider  string `json:"provider,omitempty"`
 	Model     string `json:"model,omitempty"`
+	// CoreProposal holds core operations proposed by maintenance (a topic
+	// merge, an archive); accepting applies them as the user without a
+	// plan step. Lines carries their human description for the inbox.
+	CoreProposal json.RawMessage `json:"core_proposal,omitempty"`
+	Lines        []string        `json:"lines,omitempty"`
 	// Proposal holds the operations (model vocabulary) that were not
 	// written because the capture was parked; POST /captures/{id}/accept
 	// applies them.
@@ -111,6 +116,8 @@ func (c *Capture) Clone() Object {
 	if c.Result != nil {
 		r := *c.Result
 		r.Proposal = append(json.RawMessage(nil), c.Result.Proposal...)
+		r.CoreProposal = append(json.RawMessage(nil), c.Result.CoreProposal...)
+		r.Lines = cloneStrings(c.Result.Lines)
 		cp.Result = &r
 	}
 	return &cp
@@ -174,9 +181,16 @@ const (
 
 // Task needs only ID, text, state, creation time and origin. Everything else
 // is optional evidence for the attention score.
+// TaskKind marks what kind of work a task asks for. "" is an ordinary task;
+// "research" asks Fundus to look something up on the web (concept §9).
+type TaskKind string
+
+const TaskKindResearch TaskKind = "research"
+
 type Task struct {
 	Meta
 	Text          string     `json:"text"`
+	Kind          TaskKind   `json:"kind,omitempty"`
 	State         TaskState  `json:"state"`
 	Due           string     `json:"due,omitempty"` // YYYY-MM-DD
 	EffortMinutes int        `json:"effort_minutes,omitempty"`

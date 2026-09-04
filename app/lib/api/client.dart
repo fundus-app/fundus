@@ -96,6 +96,19 @@ abstract class FundusApi {
 
   /// POST /v1/transcribe: a WAV recording (≤ 25 MB) → its transcript.
   Future<String> transcribe(Uint8List wav, {String? language});
+
+  /// POST /v1/research: start researching a task (409 already_running,
+  /// 503 research_unavailable).
+  Future<ResearchStatus> startResearch(String taskId);
+
+  /// GET /v1/research: ids of tasks being researched right now.
+  Future<List<String>> researchRunning();
+
+  /// POST /v1/maintenance/run → the run id (409 already_running).
+  Future<String> runMaintenance();
+
+  /// GET /v1/maintenance: schedule, running flag, last run and history.
+  Future<MaintenanceStatus> maintenanceStatus();
 }
 
 /// HTTP implementation.
@@ -385,6 +398,29 @@ class HttpFundusApi implements FundusApi {
     return ModelList.fromJson(
       _map(await _get('/v1/setup/models', {'provider': provider})),
     );
+  }
+
+  @override
+  Future<ResearchStatus> startResearch(String taskId) async =>
+      ResearchStatus.fromJson(
+        _map(await _post('/v1/research', {'task_id': taskId})),
+      );
+
+  @override
+  Future<String> runMaintenance() async {
+    final j = _map(await _post('/v1/maintenance/run', const {}));
+    return j['run_id'] is String ? j['run_id'] as String : '';
+  }
+
+  @override
+  Future<MaintenanceStatus> maintenanceStatus() async =>
+      MaintenanceStatus.fromJson(_map(await _get('/v1/maintenance')));
+
+  @override
+  Future<List<String>> researchRunning() async {
+    final j = _map(await _get('/v1/research'));
+    final v = j['running'];
+    return v is List ? v.whereType<String>().toList() : const [];
   }
 
   @override

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Fundus
+Comment=Capture anything. Let your AI maintain the rest.
+Exec=fundus_app
+Icon=io.github.fundus_app.fundus
+Terminal=false
+Categories=Office;
+Keywords=notes;tasks;knowledge;capture;
+StartupWMClass=fundus_app
