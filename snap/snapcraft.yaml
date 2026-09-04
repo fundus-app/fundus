@@ -41,18 +41,24 @@ apps:
       - removable-media
 
 # Paths are relative to the project root (the repository), not to snap/.
+# The dump plugin copies with hard links, which failed in the build
+# container; a plain copy in override-build does the same job.
 parts:
   app:
-    plugin: dump
+    plugin: nil
     source: snap/build-input/bundle
     source-type: local
-    organize:
-      "*": usr/bin/
+    override-build: |
+      mkdir -p "$CRAFT_PART_INSTALL/usr/bin"
+      cp -a "$CRAFT_PART_SRC/." "$CRAFT_PART_INSTALL/usr/bin/"
+      chmod +x "$CRAFT_PART_INSTALL/usr/bin/fundus_app"
     stage-packages:
       - libpulse0
   daemon:
-    plugin: dump
+    plugin: nil
     source: snap/build-input/daemon
     source-type: local
-    organize:
-      fundus: usr/bin/fundus
+    override-build: |
+      mkdir -p "$CRAFT_PART_INSTALL/usr/bin"
+      cp -a "$CRAFT_PART_SRC/fundus" "$CRAFT_PART_INSTALL/usr/bin/fundus"
+      chmod +x "$CRAFT_PART_INSTALL/usr/bin/fundus"
