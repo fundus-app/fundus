@@ -2,7 +2,7 @@
 // real shell against the in-memory fake API so research progress and a
 // result note can be staged without a search backend, then captures the
 // screen with grim (Wayland). FUNDUS_SHOT=research|research-note|note-edit|
-// inbox-proposal|maintenance,
+// inbox-proposal|maintenance|settings-<section>,
 // FUNDUS_SHOT_OUT=<png>:
 //   FUNDUS_SHOT=research FUNDUS_SHOT_OUT=/tmp/research.png \
 //   flutter test integration_test/shots/research_shot.dart -d linux
@@ -195,6 +195,39 @@ FakeApi _seed() {
     'model': 'text-embedding-4',
     'available': true,
   };
+  api.serverSettings['dictation'] = <String, dynamic>{
+    'provider': 'openai',
+    'model': 'gpt-transcribe',
+  };
+  api.serverSettings['research'] = <String, dynamic>{
+    'provider': '',
+    'model': '',
+    'backend': 'brave',
+    'search_model': '',
+    'searxng_url': '',
+    'brave_key_status': 'set',
+    'available': true,
+    'auto': true,
+  };
+  final provs = api.serverSettings['providers'] as Map<String, dynamic>;
+  provs['openai'] = <String, dynamic>{
+    'type': 'openai',
+    'key_status': 'set',
+    'key_hint': '…aRyP',
+    'transcription': 'audio',
+  };
+  provs['openrouter'] = <String, dynamic>{
+    'type': 'openai',
+    'oauth': true,
+    'key_status': 'set',
+    'transcription': 'none',
+  };
+  provs['ollama'] = <String, dynamic>{
+    'type': 'openai',
+    'local': true,
+    'base_url': 'http://127.0.0.1:11434/v1',
+    'transcription': 'none',
+  };
   final tomorrow = DateTime(_now.year, _now.month, _now.day + 1, 3, 30);
   api.maintenanceNext = tomorrow;
   api.maintenance = MaintenanceStatus.fromJson({
@@ -300,6 +333,21 @@ void main() {
       await tester.pump(const Duration(milliseconds: 200));
     } else if (which == 'inbox-proposal') {
       await tester.pump(const Duration(milliseconds: 300));
+    } else if (which.startsWith('settings-')) {
+      await tester.tap(find.byIcon(Icons.settings_outlined));
+      for (var i = 0; i < 8; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      await tester.tap(find.byKey(Key('settings-nav-${which.substring(9)}')));
+      for (var i = 0; i < 8; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      if (which == 'settings-providers') {
+        await tester.tap(find.byKey(const Key('provider-change-openai')));
+        for (var i = 0; i < 4; i++) {
+          await tester.pump(const Duration(milliseconds: 100));
+        }
+      }
     } else if (which == 'maintenance') {
       await tester.tap(find.byIcon(Icons.settings_outlined));
       for (var i = 0; i < 8; i++) {

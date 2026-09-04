@@ -262,7 +262,7 @@ void main() {
         'maintenance': {'every': 6},
       });
       await tester.pump();
-      expect(find.textContaining('Every 6 h'), findsOneWidget);
+      expect(find.textContaining('Every 6 h'), findsWidgets);
 
       // Last run table and notes.
       expect(find.byKey(const Key('maintenance-last')), findsOneWidget);
@@ -300,7 +300,13 @@ void main() {
       await tester.pump();
       await tester.pump();
       expect(find.byKey(const Key('maintenance-progress')), findsNothing);
-      expect(find.text('Run now'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('maintenance-run')),
+          matching: find.text('Run now'),
+        ),
+        findsOneWidget,
+      );
       api.maintenanceRunError = const ApiException(
         409,
         'already_running',

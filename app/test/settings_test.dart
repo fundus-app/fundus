@@ -13,6 +13,7 @@ import 'package:fundus_app/ui/settings_screen.dart';
 import 'package:fundus_app/ui/theme.dart';
 import 'package:fundus_app/ui/widgets/toasts.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'fake_api.dart';
 
@@ -117,7 +118,10 @@ void main() {
     (tester) async {
       final api = _configured();
       final state = AppState(api);
-      final settings = Settings.memory(serverUrl: 'http://127.0.0.1:7433');
+      SharedPreferences.setMockInitialValues({
+        'server_url': 'http://127.0.0.1:7433',
+      });
+      final settings = await Settings.load();
       _wide(tester);
       await tester.pumpWidget(
         _app(state, const ConnectionSection(), settings: settings),
@@ -218,6 +222,7 @@ void main() {
         find.byKey(const Key('provider-key-openai')),
         'sk-new-key-1234',
       );
+      await tester.pump();
       await tester.tap(find.byKey(const Key('provider-replace-openai')));
       await tester.pump();
       expect(api.settingsPatches.last, {

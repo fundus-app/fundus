@@ -3,8 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../../api/models.dart';
 import '../../state/app_state.dart';
-import '../setup/setup_wizard.dart'
-    show RoleModelPicker, modelDisplay, providerTitle;
+import '../setup/setup_wizard.dart' show RoleModelPicker, providerTitle;
 import '../widgets/common.dart';
 import '../widgets/toasts.dart';
 import 'rows.dart';
@@ -108,11 +107,15 @@ class _ModelsSectionState extends State<ModelsSection> {
       );
     }
     final fallback = s.chat;
-    String value(RoleRef r) => r.model.isEmpty
-        ? (fallback.model.isEmpty
-              ? 'Not set'
-              : '${modelDisplay(fallback.provider, fallback.model)} · same as conversation')
-        : '${modelDisplay(r.provider, r.model)} · ${providerTitle(r.provider)}';
+    String value(RoleRef r) {
+      if (r.model.isEmpty) {
+        return fallback.model.isEmpty
+            ? 'Not set'
+            : '${roleValue(fallback)} · same as conversation';
+      }
+      return roleValue(r);
+    }
+
     Widget role(
       String key,
       String label,
@@ -377,4 +380,12 @@ class _RolePickerDialogState extends State<RolePickerDialog> {
       ],
     );
   }
+}
+
+/// "gpt-5.6-luna · OpenAI"; "rules" for the built-in fallback.
+String roleValue(RoleRef r) {
+  if (r.provider == 'fake' || r.model == 'heuristic') return 'rules';
+  return r.provider.isEmpty
+      ? r.model
+      : '${r.model} · ${providerTitle(r.provider)}';
 }
