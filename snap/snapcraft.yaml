@@ -1,7 +1,7 @@
 # Snap of the Linux desktop app plus the daemon. The release workflow fills
-# build-input/ with the Flutter bundle (build-input/bundle) and the static
-# daemon (build-input/daemon/fundus) and replaces the version before
-# snapcraft runs, so the snap packages exactly the binaries that were tested.
+# snap/build-input/ with the Flutter bundle (bundle/) and the static daemon
+# (daemon/fundus) and replaces the version before snapcraft runs, so the snap
+# packages exactly the binaries that were tested.
 name: fundus
 title: Fundus
 base: core24
@@ -40,16 +40,19 @@ apps:
       - home
       - removable-media
 
+# Paths are relative to the project root (the repository), not to snap/.
 parts:
   app:
     plugin: dump
-    source: build-input/bundle
+    source: snap/build-input/bundle
+    source-type: local
     organize:
       "*": usr/bin/
     stage-packages:
       - libpulse0
   daemon:
     plugin: dump
-    source: build-input/daemon
+    source: snap/build-input/daemon
+    source-type: local
     organize:
       fundus: usr/bin/fundus
